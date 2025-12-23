@@ -1,0 +1,721 @@
+"""Main window for VB2Arduino IDE."""
+
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
+    QToolBar, QPushButton, QComboBox, QLabel, QMessageBox, QFileDialog,
+    QStatusBar, QDialog, QProgressDialog
+)
+from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QIcon, QAction
+import pathlib
+import subprocess
+import tempfile
+
+from vb2arduino.ide.editor import CodeEditorWidget
+from vb2arduino.ide.serial_monitor import SerialMonitor
+from vb2arduino.ide.project_tree import ProjectTreeView
+from vb2arduino.ide.utils import get_available_ports, get_platformio_boards
+from vb2arduino.ide.settings import Settings
+from vb2arduino.ide.settings_dialog import SettingsDialog
+from vb2arduino.ide.libraries_dialog import LibrariesDialog
+from vb2arduino import transpile_string
+
+
+class MainWindow(QMainWindow):
+    """Main IDE window similar to Arduino IDE."""
+    
+    def __init__(self):
+        super().__init__()
+        self.settings = Settings()
+        self.current_file = None
+        self.is_modified = False
+        self.build_output_dir = pathlib.Path(tempfile.gettempdir()) / "vb2arduino_build"
+        self.selected_libraries = []  # Track selected libraries
+        
+        # Board to platform mapping
+        self.board_platforms = {
+            # ESP32 boards
+            "esp32-s3-devkitm-1": "espressif32",
+            "esp32-s3-devkitc-1": "espressif32",
+            "esp32dev": "espressif32",
+            "esp32-c3-devkitm-1": "espressif32",
+            "esp32-s2-saola-1": "espressif32",
+            "lolin_d32": "espressif32",
+            # Arduino AVR boards
+            "uno": "atmelavr",
+            "mega2560": "atmelavr",
+            "megaatmega2560": "atmelavr",
+            "nano": "atmelavr",
+            "nanoatmega328": "atmelavr",
+            "leonardo": "atmelavr",
+            "micro": "atmelavr",
+            "pro16MHzatmega328": "atmelavr",
+            # Arduino ARM boards
+            "nano_33_iot": "atmelsam",
+            "mkr1000": "atmelsam",
+            "mkrwifi1010": "atmelsam",
+            "zero": "atmelsam",
+            "due": "atmelsam",
+            # RP2040 boards
+            "pico": "raspberrypi",
+            "nanorp2040connect": "raspberrypi",
+        }
+        
+        self.init_ui()
+        self.update_title()
+        
+    def init_ui(self):
+        """Initialize the user interface."""
+        self.setWindowTitle("VB2Arduino IDE")
+        self.setGeometry(100, 100, 1200, 800)
+        
+        # Create toolbar
+        self.create_toolbar()
+        
+        # Create central widget with splitter
+        central = QWidget()
+        self.setCentralWidget(central)
+        layout = QVBoxLayout(central)
+        
+        # Vertical splitter for editor area and serial monitor
+        v_splitter = QSplitter(Qt.Orientation.Vertical)
+        
+        # Horizontal splitter for editor and tree view
+        h_splitter = QSplitter(Qt.Orientation.Horizontal)
+        
+        # Code editor with procedure dropdown
+        self.editor_widget = CodeEditorWidget(self.settings)
+        self.editor = self.editor_widget.editor  # Keep reference for backward compatibility
+        self.editor.textChanged.connect(self.on_text_changed)
+        
+        # Timer for updating tree view (debounced)
+        self.tree_update_timer = QTimer()
+        self.tree_update_timer.setSingleShot(True)
+        self.tree_update_timer.timeout.connect(self.update_tree_view)
+        self.editor.textChanged.connect(lambda: self.tree_update_timer.start(500))
+        
+        h_splitter.addWidget(self.editor_widget)
+        
+        # Project tree view
+        self.tree_view = ProjectTreeView()
+        self.tree_view.item_clicked.connect(self.goto_line)
+        h_splitter.addWidget(self.tree_view)
+        
+        # Set initial sizes (editor larger than tree)
+        h_splitter.setSizes([700, 250])
+        
+        v_splitter.addWidget(h_splitter)
+        
+        # Serial monitor
+        self.serial_monitor = SerialMonitor()
+        v_splitter.addWidget(self.serial_monitor)
+        
+        # Set initial sizes (editor area larger)
+        v_splitter.setSizes([600, 200])
+        
+        layout.addWidget(v_splitter)
+        
+        # Status bar
+        self.status = QStatusBar()
+        self.setStatusBar(self.status)
+        self.status.showMessage("Ready")
+        
+        # Create menu bar
+        self.create_menus()
+        
+        # Load default template
+        self.load_template()
+        
+    def create_toolbar(self):
+        """Create toolbar with buttons."""
+        toolbar = QToolBar("Main Toolbar")
+        toolbar.setMovable(False)
+        self.addToolBar(toolbar)
+        
+        # Compile button (was Verify)
+        verify_btn = QPushButton("✓ Compile")
+        verify_btn.setToolTip("Compile (Ctrl+R)")
+        verify_btn.clicked.connect(self.verify_code)
+        toolbar.addWidget(verify_btn)
+        
+        # Upload button  
+        upload_btn = QPushButton("→ Upload")
+        upload_btn.setToolTip("Compile and Upload (Ctrl+U)")
+        upload_btn.clicked.connect(self.upload_code)
+        toolbar.addWidget(upload_btn)
+        
+        toolbar.addSeparator()
+        
+        # Board selection
+        toolbar.addWidget(QLabel("Board: "))
+        self.board_combo = QComboBox()
+        
+        # Organize boards by category
+        boards = [
+            ("ESP32", [
+                ("ESP32-S3 DevKitM-1", "esp32-s3-devkitm-1"),
+                ("ESP32-S3 DevKitC-1", "esp32-s3-devkitc-1"),
+                ("ESP32 Dev Module", "esp32dev"),
+                ("ESP32-C3 DevKitM-1", "esp32-c3-devkitm-1"),
+                ("ESP32-S2 Saola-1", "esp32-s2-saola-1"),
+                ("WEMOS LOLIN D32", "lolin_d32"),
+            ]),
+            ("Arduino AVR", [
+                ("Arduino Uno", "uno"),
+                ("Arduino Mega 2560", "megaatmega2560"),
+                ("Arduino Nano", "nanoatmega328"),
+                ("Arduino Leonardo", "leonardo"),
+                ("Arduino Micro", "micro"),
+                ("Arduino Pro Mini 5V 16MHz", "pro16MHzatmega328"),
+            ]),
+            ("Arduino ARM", [
+                ("Arduino Nano 33 IoT", "nano_33_iot"),
+                ("Arduino MKR1000", "mkr1000"),
+                ("Arduino MKR WiFi 1010", "mkrwifi1010"),
+                ("Arduino Zero", "zero"),
+                ("Arduino Due", "due"),
+            ]),
+            ("Raspberry Pi", [
+                ("Raspberry Pi Pico", "pico"),
+                ("Arduino Nano RP2040 Connect", "nanorp2040connect"),
+            ]),
+        ]
+        
+        for category, board_list in boards:
+            self.board_combo.addItem(f"--- {category} ---", None)
+            for display_name, board_id in board_list:
+                self.board_combo.addItem(display_name, board_id)
+        
+        self.board_combo.setMinimumWidth(250)
+        toolbar.addWidget(self.board_combo)
+        
+        toolbar.addSeparator()
+        
+        # Port selection
+        toolbar.addWidget(QLabel("Port: "))
+        self.port_combo = QComboBox()
+        self.refresh_ports()
+        self.port_combo.setMinimumWidth(150)
+        toolbar.addWidget(self.port_combo)
+        
+        # Refresh ports button
+        refresh_btn = QPushButton("↻")
+        refresh_btn.setToolTip("Refresh ports")
+        refresh_btn.clicked.connect(self.refresh_ports)
+        toolbar.addWidget(refresh_btn)
+        
+        toolbar.addSeparator()
+        
+        # Serial Monitor toggle
+        serial_btn = QPushButton("Serial Monitor")
+        serial_btn.setCheckable(True)
+        serial_btn.setChecked(True)
+        serial_btn.toggled.connect(self.toggle_serial_monitor)
+        toolbar.addWidget(serial_btn)
+        
+    def create_menus(self):
+        """Create menu bar."""
+        menubar = self.menuBar()
+        
+        # File menu
+        file_menu = menubar.addMenu("&File")
+        
+        new_action = QAction("&New", self)
+        new_action.setShortcut("Ctrl+N")
+        new_action.triggered.connect(self.new_file)
+        file_menu.addAction(new_action)
+        
+        open_action = QAction("&Open...", self)
+        open_action.setShortcut("Ctrl+O")
+        open_action.triggered.connect(self.open_file)
+        file_menu.addAction(open_action)
+        
+        save_action = QAction("&Save", self)
+        save_action.setShortcut("Ctrl+S")
+        save_action.triggered.connect(self.save_file)
+        file_menu.addAction(save_action)
+        
+        save_as_action = QAction("Save &As...", self)
+        save_as_action.setShortcut("Ctrl+Shift+S")
+        save_as_action.triggered.connect(self.save_file_as)
+        file_menu.addAction(save_as_action)
+        
+        file_menu.addSeparator()
+        
+        quit_action = QAction("&Quit", self)
+        quit_action.setShortcut("Ctrl+Q")
+        quit_action.triggered.connect(self.close)
+        file_menu.addAction(quit_action)
+        
+        # Edit menu
+        edit_menu = menubar.addMenu("&Edit")
+        
+        undo_action = QAction("&Undo", self)
+        undo_action.setShortcut("Ctrl+Z")
+        undo_action.triggered.connect(self.editor.undo)
+        edit_menu.addAction(undo_action)
+        
+        redo_action = QAction("&Redo", self)
+        redo_action.setShortcut("Ctrl+Y")
+        redo_action.triggered.connect(self.editor.redo)
+        edit_menu.addAction(redo_action)
+        
+        edit_menu.addSeparator()
+        
+        cut_action = QAction("Cu&t", self)
+        cut_action.setShortcut("Ctrl+X")
+        cut_action.triggered.connect(self.editor.cut)
+        edit_menu.addAction(cut_action)
+        
+        copy_action = QAction("&Copy", self)
+        copy_action.setShortcut("Ctrl+C")
+        copy_action.triggered.connect(self.editor.copy)
+        edit_menu.addAction(copy_action)
+        
+        paste_action = QAction("&Paste", self)
+        paste_action.setShortcut("Ctrl+V")
+        paste_action.triggered.connect(self.editor.paste)
+        edit_menu.addAction(paste_action)
+        
+        # Sketch menu
+        sketch_menu = menubar.addMenu("&Sketch")
+        
+        verify_action = QAction("&Compile", self)
+        verify_action.setShortcut("Ctrl+R")
+        verify_action.triggered.connect(self.verify_code)
+        sketch_menu.addAction(verify_action)
+        
+        upload_action = QAction("&Upload", self)
+        upload_action.setShortcut("Ctrl+U")
+        upload_action.triggered.connect(self.upload_code)
+        sketch_menu.addAction(upload_action)
+        
+        sketch_menu.addSeparator()
+        
+        libraries_action = QAction("Include &Library...", self)
+        libraries_action.triggered.connect(self.show_libraries)
+        sketch_menu.addAction(libraries_action)
+        
+        # Tools menu
+        tools_menu = menubar.addMenu("&Tools")
+        
+        serial_action = QAction("Serial &Monitor", self)
+        serial_action.setShortcut("Ctrl+Shift+M")
+        serial_action.triggered.connect(lambda: self.serial_monitor.setVisible(not self.serial_monitor.isVisible()))
+        tools_menu.addAction(serial_action)
+        
+        tools_menu.addSeparator()
+        
+        settings_action = QAction("&Settings...", self)
+        settings_action.triggered.connect(self.show_settings)
+        tools_menu.addAction(settings_action)
+        
+        # Help menu
+        help_menu = menubar.addMenu("&Help")
+        
+        about_action = QAction("&About VB2Arduino", self)
+        about_action.triggered.connect(self.show_about)
+        help_menu.addAction(about_action)
+        
+    def load_template(self):
+        """Load default VB template."""
+        template = """' VB2Arduino Sketch
+Const LED = 2
+
+Sub Setup()
+    PinMode LED, OUTPUT
+End Sub
+
+Sub Loop()
+    DigitalWrite LED, HIGH
+    Delay 1000
+    DigitalWrite LED, LOW
+    Delay 1000
+End Sub
+"""
+        self.editor_widget.setPlainText(template)
+        self.is_modified = False
+        self.update_title()
+        self.update_tree_view()
+        
+    def new_file(self):
+        """Create new file."""
+        if self.check_save_changes():
+            self.current_file = None
+            self.load_template()
+            
+    def open_file(self):
+        """Open existing file."""
+        if not self.check_save_changes():
+            return
+            
+        filename, _ = QFileDialog.getOpenFileName(
+            self,
+            "Open VB File",
+            "",
+            "VB Files (*.vb);;All Files (*)"
+        )
+        
+        if filename:
+            try:
+                with open(filename, 'r', encoding='utf-8') as f:
+                    self.editor_widget.setPlainText(f.read())
+                self.current_file = pathlib.Path(filename)
+                self.is_modified = False
+                self.update_title()
+                self.update_tree_view()
+                self.status.showMessage(f"Opened: {filename}")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to open file:\n{e}")
+                
+    def save_file(self):
+        """Save current file."""
+        if self.current_file is None:
+            return self.save_file_as()
+        return self._save_to_file(self.current_file)
+        
+    def save_file_as(self):
+        """Save file with new name."""
+        filename, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save VB File",
+            "",
+            "VB Files (*.vb);;All Files (*)"
+        )
+        
+        if filename:
+            path = pathlib.Path(filename)
+            if path.suffix == "":
+                path = path.with_suffix(".vb")
+            return self._save_to_file(path)
+        return False
+        
+    def _save_to_file(self, path: pathlib.Path):
+        """Internal save helper."""
+        try:
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(self.editor.toPlainText())
+            self.current_file = path
+            self.is_modified = False
+            self.update_title()
+            self.status.showMessage(f"Saved: {path}")
+            return True
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to save file:\n{e}")
+            return False
+            
+    def check_platformio(self):
+        """Check if PlatformIO is installed."""
+        try:
+            result = subprocess.run(
+                ["pio", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            return result.returncode == 0
+        except (subprocess.SubprocessError, FileNotFoundError):
+            return False
+            
+    def verify_code(self):
+        """Compile/verify code."""
+        # Check if PlatformIO is installed
+        if not self.check_platformio():
+            QMessageBox.critical(
+                self,
+                "PlatformIO Not Found",
+                "PlatformIO CLI is not installed or not in PATH.\n\n"
+                "Please install it using:\n"
+                "  pip install platformio\n\n"
+                "Or visit: https://platformio.org/install/cli"
+            )
+            self.status.showMessage("✗ PlatformIO not found")
+            return
+            
+        self.status.showMessage("Compiling...")
+        progress = QProgressDialog("Compiling...", None, 0, 0, self)
+        progress.setWindowModality(Qt.WindowModality.ApplicationModal)
+        progress.setCancelButton(None)
+        progress.setWindowTitle("Compile")
+        progress.show()
+        QApplication.processEvents()
+        
+        try:
+            # Transpile VB to C++
+            vb_code = self.editor.toPlainText()
+            cpp_code = transpile_string(vb_code)
+            
+            # Create PlatformIO project structure
+            self.build_output_dir.mkdir(parents=True, exist_ok=True)
+            src_dir = self.build_output_dir / "src"
+            src_dir.mkdir(exist_ok=True)
+            
+            # Write main.cpp to src directory
+            cpp_file = src_dir / "main.cpp"
+            cpp_file.write_text(cpp_code, encoding='utf-8')
+            
+            # Get board ID and platform
+            board = self.board_combo.currentData()
+            if not board:  # Category header selected
+                QMessageBox.warning(self, "No Board", "Please select a board, not a category header.")
+                self.status.showMessage("✗ No board selected")
+                return
+            
+            platform = self.board_platforms.get(board, "atmelavr")
+            
+            # Create platformio.ini
+            ini_file = self.build_output_dir / "platformio.ini"
+            ini_file.write_text(
+                f"[env:{board}]\n"
+                f"platform = {platform}\n"
+                f"board = {board}\n"
+                f"framework = arduino\n",
+                encoding='utf-8'
+            )
+            
+            # Run PlatformIO compile
+            result = subprocess.run(
+                ["pio", "run", "--project-dir", str(self.build_output_dir), "--environment", board],
+                capture_output=True,
+                text=True
+            )
+            
+            if result.returncode == 0:
+                self.status.showMessage("✓ Compilation successful")
+                QMessageBox.information(self, "Success", "Code compiled successfully!")
+            else:
+                self.status.showMessage("✗ Compilation failed")
+                QMessageBox.warning(self, "Compilation Error", 
+                    f"Compilation failed:\n\n{result.stderr[:500]}")
+                    
+        except Exception as e:
+            self.status.showMessage("✗ Error")
+            QMessageBox.critical(self, "Error", f"Compilation error:\n{e}")
+        finally:
+            progress.close()
+            
+    def upload_code(self):
+        """Compile and upload code."""
+        # Check if PlatformIO is installed
+        if not self.check_platformio():
+            QMessageBox.critical(
+                self,
+                "PlatformIO Not Found",
+                "PlatformIO CLI is not installed or not in PATH.\n\n"
+                "Please install it using:\n"
+                "  pip install platformio\n\n"
+                "Or visit: https://platformio.org/install/cli"
+            )
+            self.status.showMessage("✗ PlatformIO not found")
+            return
+            
+        port = self.port_combo.currentText()
+        if not port:
+            QMessageBox.warning(self, "No Port", "Please select a serial port first.")
+            return
+            
+        self.status.showMessage("Uploading...")
+        progress = QProgressDialog("Compiling & Uploading...", None, 0, 0, self)
+        progress.setWindowModality(Qt.WindowModality.ApplicationModal)
+        progress.setCancelButton(None)
+        progress.setWindowTitle("Upload")
+        progress.show()
+        QApplication.processEvents()
+        
+        try:
+            # Transpile VB to C++
+            vb_code = self.editor.toPlainText()
+            cpp_code = transpile_string(vb_code)
+            
+            # Create PlatformIO project structure
+            self.build_output_dir.mkdir(parents=True, exist_ok=True)
+            src_dir = self.build_output_dir / "src"
+            src_dir.mkdir(exist_ok=True)
+            
+            # Write main.cpp to src directory
+            cpp_file = src_dir / "main.cpp"
+            cpp_file.write_text(cpp_code, encoding='utf-8')
+            
+            # Get board ID and platform
+            board = self.board_combo.currentData()
+            if not board:  # Category header selected
+                QMessageBox.warning(self, "No Board", "Please select a board, not a category header.")
+                self.status.showMessage("✗ No board selected")
+                return
+            
+            platform = self.board_platforms.get(board, "atmelavr")
+            
+            # Create platformio.ini
+            ini_file = self.build_output_dir / "platformio.ini"
+            ini_file.write_text(
+                f"[env:{board}]\n"
+                f"platform = {platform}\n"
+                f"board = {board}\n"
+                f"framework = arduino\n",
+                encoding='utf-8'
+            )
+            
+            # Run PlatformIO upload
+            result = subprocess.run(
+                ["pio", "run", "--project-dir", str(self.build_output_dir), 
+                 "--environment", board, "--target", "upload", "--upload-port", port],
+                capture_output=True,
+                text=True
+            )
+            
+            if result.returncode == 0:
+                self.status.showMessage("✓ Upload successful")
+                QMessageBox.information(self, "Success", "Code uploaded successfully!")
+            else:
+                self.status.showMessage("✗ Upload failed")
+                QMessageBox.warning(self, "Upload Error",
+                    f"Upload failed:\n\n{result.stderr[:500]}")
+                    
+        except Exception as e:
+            self.status.showMessage("✗ Error")
+            QMessageBox.critical(self, "Error", f"Upload error:\n{e}")
+        finally:
+            progress.close()
+            
+    def refresh_ports(self):
+        """Refresh available serial ports."""
+        ports = get_available_ports()
+        self.port_combo.clear()
+        self.port_combo.addItems(ports)
+        
+    def toggle_serial_monitor(self, checked):
+        """Toggle serial monitor visibility."""
+        self.serial_monitor.setVisible(checked)
+        
+    def on_text_changed(self):
+        """Handle text change in editor."""
+        self.is_modified = True
+        self.update_title()
+        
+    def update_tree_view(self):
+        """Update the project tree view with current code structure."""
+        code = self.editor.toPlainText()
+        self.tree_view.update_from_code(code)
+        
+    def goto_line(self, line_number):
+        """Navigate to a specific line in the editor."""
+        if line_number > 0:
+            cursor = self.editor.textCursor()
+            cursor.movePosition(cursor.MoveOperation.Start)
+            cursor.movePosition(cursor.MoveOperation.Down, cursor.MoveMode.MoveAnchor, line_number - 1)
+            self.editor.setTextCursor(cursor)
+            self.editor.centerCursor()
+            self.editor.setFocus()
+        
+    def update_title(self):
+        """Update window title."""
+        title = "VB2Arduino IDE"
+        if self.current_file:
+            title += f" - {self.current_file.name}"
+        else:
+            title += " - Untitled"
+        if self.is_modified:
+            title += " *"
+        self.setWindowTitle(title)
+        
+    def check_save_changes(self):
+        """Check if unsaved changes exist and prompt user."""
+        if not self.is_modified:
+            return True
+            
+        reply = QMessageBox.question(
+            self,
+            "Unsaved Changes",
+            "Do you want to save your changes?",
+            QMessageBox.StandardButton.Save | 
+            QMessageBox.StandardButton.Discard | 
+            QMessageBox.StandardButton.Cancel
+        )
+        
+        if reply == QMessageBox.StandardButton.Save:
+            return self.save_file()
+        elif reply == QMessageBox.StandardButton.Discard:
+            return True
+        else:
+            return False
+            
+    def show_about(self):
+        """Show about dialog."""
+        QMessageBox.about(
+            self,
+            "About VB2Arduino IDE",
+            "<h2>VB2Arduino IDE</h2>"
+            "<p>Version 0.1.0</p>"
+            "<p>A Visual Basic 6-style IDE for Arduino development.</p>"
+            "<p>Write VB6-like code that transpiles to Arduino C++.</p>"
+            "<p>Licensed under GPL-3.0-or-later</p>"
+        )
+        
+    def show_settings(self):
+        """Show settings dialog."""
+        dialog = SettingsDialog(self.settings, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            # Apply new settings to editor
+            self.editor.apply_settings(self.settings)
+            self.status.showMessage("Settings applied", 2000)
+    
+    def show_libraries(self):
+        """Show library selection dialog."""
+        dialog = LibrariesDialog(self.selected_libraries, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.selected_libraries = dialog.get_selected_libraries()
+            self.inject_library_includes()
+            self.status.showMessage(f"Selected {len(self.selected_libraries)} libraries", 2000)
+    
+    def inject_library_includes(self):
+        """Inject #Include statements for selected libraries at the top of the code."""
+        if not self.selected_libraries:
+            return
+        
+        current_code = self.editor.toPlainText()
+        lines = current_code.split('\n')
+        
+        # Find existing #Include lines
+        include_lines = []
+        code_start = 0
+        for i, line in enumerate(lines):
+            if line.strip().upper().startswith('#INCLUDE'):
+                include_lines.append(i)
+            elif line.strip() and not line.strip().startswith("'"):
+                code_start = i
+                break
+        
+        # Remove old includes
+        for i in reversed(include_lines):
+            lines.pop(i)
+        
+        # Add new includes at the top
+        new_includes = [f"#Include <{lib}>" for lib in self.selected_libraries]
+        
+        # Insert after any initial comments
+        insert_pos = 0
+        for i, line in enumerate(lines):
+            if line.strip().startswith("'") or not line.strip():
+                insert_pos = i + 1
+            else:
+                break
+        
+        # Insert includes
+        for include in reversed(new_includes):
+            lines.insert(insert_pos, include)
+        
+        # Add blank line after includes if needed
+        if new_includes and lines[insert_pos + len(new_includes)].strip():
+            lines.insert(insert_pos + len(new_includes), "")
+        
+        # Update editor
+        self.editor_widget.setPlainText('\n'.join(lines))
+        self.is_modified = True
+        self.update_title()
+        
+    def closeEvent(self, event):
+        """Handle window close event."""
+        if self.check_save_changes():
+            event.accept()
+        else:
+            event.ignore()

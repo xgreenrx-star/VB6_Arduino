@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=65.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vb2arduino"
+version = "0.1.0"
+description = "VB6-like language transpiler for Arduino C++"
+readme = "README.md"
+authors = [{name = "VB2Arduino Contributors"}]
+license = {text = "GPL-3.0-or-later"}
+requires-python = ">=3.10"
+dependencies = [
+    "PyQt6>=6.4.0",
+    "PyQt6-QScintilla>=2.13.0",
+    "pyserial>=3.5",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Compilers",
+]
+keywords = ["vb6", "arduino", "transpiler", "esp32", "embedded"]
+
+[project.scripts]
+vb2arduino = "vb2arduino.cli:main"
+vb2arduino-ide = "vb2arduino.ide:main"
+
+[project.urls]
+Homepage = "https://github.com/xgreenrx-star/vb2arduino"
+Repository = "https://github.com/xgreenrx-star/vb2arduino"
+Issues = "https://github.com/xgreenrx-star/vb2arduino/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+vb2arduino = ["py.typed"]
