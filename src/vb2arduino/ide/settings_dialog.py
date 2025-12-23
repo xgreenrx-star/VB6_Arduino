@@ -80,9 +80,31 @@ class SettingsDialog(QDialog):
         self.add_color_picker(color_layout, "editor", "current_line_color", "Current Line:")
         self.add_color_picker(color_layout, "editor", "line_number_bg", "Line Number Background:")
         self.add_color_picker(color_layout, "editor", "line_number_fg", "Line Number Foreground:")
+        self.add_color_picker(color_layout, "editor", "jump_highlight_color", "Jump Highlight:")
         
         color_group.setLayout(color_layout)
         layout.addWidget(color_group)
+
+        # Behavior settings
+        behavior_group = QGroupBox("Behavior")
+        behavior_layout = QFormLayout()
+        self.jump_highlight_duration = QSpinBox()
+        self.jump_highlight_duration.setRange(250, 10000)
+        self.jump_highlight_duration.setSingleStep(250)
+        behavior_layout.addRow("Jump Highlight Duration (ms):", self.jump_highlight_duration)
+        # Success pop-up toggles
+        self.compile_success_popup_cb = QCheckBox("Show Compile Success Pop-up")
+        self.upload_success_popup_cb = QCheckBox("Show Upload Success Pop-up")
+        # Align as form rows for consistency
+        behavior_layout.addRow("Compile Success Pop-up:", self.compile_success_popup_cb)
+        behavior_layout.addRow("Upload Success Pop-up:", self.upload_success_popup_cb)
+        # Failure pop-up toggles
+        self.compile_failure_popup_cb = QCheckBox("Show Compile Failure Pop-up")
+        self.upload_failure_popup_cb = QCheckBox("Show Upload Failure Pop-up")
+        behavior_layout.addRow("Compile Failure Pop-up:", self.compile_failure_popup_cb)
+        behavior_layout.addRow("Upload Failure Pop-up:", self.upload_failure_popup_cb)
+        behavior_group.setLayout(behavior_layout)
+        layout.addWidget(behavior_group)
         
         layout.addStretch()
         widget.setLayout(layout)
@@ -196,6 +218,22 @@ class SettingsDialog(QDialog):
             category, setting = key.split(".")
             color = self.settings.get(category, setting, "#000000")
             btn.setStyleSheet(f"background-color: {color};")
+        # Behavior
+        self.jump_highlight_duration.setValue(
+            self.settings.get("editor", "jump_highlight_duration_ms", 3000)
+        )
+        self.compile_success_popup_cb.setChecked(
+            self.settings.get("editor", "show_compile_success_popup", True)
+        )
+        self.upload_success_popup_cb.setChecked(
+            self.settings.get("editor", "show_upload_success_popup", True)
+        )
+        self.compile_failure_popup_cb.setChecked(
+            self.settings.get("editor", "show_compile_failure_popup", True)
+        )
+        self.upload_failure_popup_cb.setChecked(
+            self.settings.get("editor", "show_upload_failure_popup", True)
+        )
             
         # Syntax style checkboxes
         self.keyword_bold.setChecked(
@@ -228,6 +266,12 @@ class SettingsDialog(QDialog):
             category, setting = key.split(".")
             color = btn.palette().button().color().name()
             self.settings.set(category, setting, color)
+        # Behavior
+        self.settings.set("editor", "jump_highlight_duration_ms", self.jump_highlight_duration.value())
+        self.settings.set("editor", "show_compile_success_popup", self.compile_success_popup_cb.isChecked())
+        self.settings.set("editor", "show_upload_success_popup", self.upload_success_popup_cb.isChecked())
+        self.settings.set("editor", "show_compile_failure_popup", self.compile_failure_popup_cb.isChecked())
+        self.settings.set("editor", "show_upload_failure_popup", self.upload_failure_popup_cb.isChecked())
             
         # Syntax style checkboxes
         self.settings.set("syntax", "keyword_bold", self.keyword_bold.isChecked())

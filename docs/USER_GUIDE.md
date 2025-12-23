@@ -53,6 +53,10 @@ If `pio` is not on PATH, run as `python -m platformio ...`.
 - **Serial Monitor**: Connect/disconnect, baud selection, send/receive.
 - **Library Include Helper**: Inserts `#Include <...>` lines at top of the sketch.
 - **Progress Dialogs**: Indeterminate progress shown during compile/upload.
+- **Clickable Errors**: On compile/upload failure, a list of errors maps directly to VB lines; double-click to jump.
+- **VB-only Focus**: The generated C++ is hidden; errors are mapped back to VB automatically.
+- **Configurable Pop-ups**: Success/failure pop-ups can be enabled/disabled in Settings.
+- **Jump Highlight**: When navigating to an error, the target VB line is briefly highlighted; color/duration configurable.
 
 ## 3. Workflow
 1) Select board in toolbar.
@@ -132,6 +136,33 @@ vb2arduino input.vb --out generated --board esp32-s3-devkitm-1 --build --upload 
 - **Upload needs port**: select correct `COMx` (Windows) or `/dev/ttyUSB*` `/dev/ttyACM*` (Linux/macOS).
 - **BLE setValue(String) error**: use `command.c_str()` (already applied in examples).
 - **Preferences flush error**: removed; ESP32 Preferences does not expose `flush`.
+- **Qt accessibility warning**: benign message on Linux; does not affect functionality.
 
 ## 7. Examples
 See `examples/` for ready-made sketches: `blink.vb`, `button_led.vb`, `serial_echo.vb`, `pwdongle_port.vb`, and demos.
+
+## 8. Compile Errors & VB Line Mapping
+- When compilation/upload fails, the IDE parses compiler output and shows a clickable list of errors.
+- Each error item maps to the corresponding VB line; double-click an entry to jump to that line.
+- The IDE briefly highlights the target line and shows a status bar hint with a concise error summary.
+- The generated C++ is not shown to avoid confusion; mapping is automatic.
+
+Notes:
+- If failure pop-ups are disabled in Settings, errors are reported via the status bar only and the clickable dialog is suppressed.
+
+## 9. Settings
+Open Tools → Settings → Editor.
+
+Editor → Colors:
+- Background/Text/Current Line/Line Number colors.
+- Jump Highlight: color used for the temporary highlight when navigating to an error.
+
+Editor → Behavior:
+- Jump Highlight Duration (ms): how long the error target line is highlighted (default 3000ms).
+- Compile Success Pop-up: show a dialog when compilation succeeds (default on).
+- Upload Success Pop-up: show a dialog when upload succeeds (default on).
+- Compile Failure Pop-up: show clickable error dialog on compilation failure (default on).
+- Upload Failure Pop-up: show clickable error dialog on upload failure (default on).
+
+Tip:
+- If you prefer a quieter workflow, disable success/failure pop-ups and rely on the status bar messages and manual navigation.

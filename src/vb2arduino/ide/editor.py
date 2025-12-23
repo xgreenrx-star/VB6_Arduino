@@ -161,7 +161,13 @@ class CodeEditor(QPlainTextEdit):
         
         # Apply colors after line_number_area is created
         self.apply_colors()
-        
+
+        # Temporary jump highlight support (init before any highlighting)
+        self._temp_highlight = None
+        self._temp_highlight_timer = QTimer(self)
+        self._temp_highlight_timer.setSingleShot(True)
+        self._temp_highlight_timer.timeout.connect(self._clear_temp_highlight)
+
         self.update_line_number_area_width(0)
         self.highlight_current_line()
         
@@ -502,8 +508,36 @@ class CodeEditor(QPlainTextEdit):
             selection.cursor = self.textCursor()
             selection.cursor.clearSelection()
             extra_selections.append(selection)
+            # Include temporary jump highlight if present
+            if self._temp_highlight is not None:
+                extra_selections.append(self._temp_highlight)
             
         self.setExtraSelections(extra_selections)
+
+    def highlight_line(self, line_number: int, duration_ms: int = 3000):
+        """Temporarily highlight a specific line for visual guidance."""
+        if line_number <= 0:
+            return
+        # Create a cursor positioned at the start of the target line
+        cursor = self.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.Start)
+        cursor.movePosition(QTextCursor.MoveOperation.Down, QTextCursor.MoveMode.MoveAnchor, line_number - 1)
+
+        sel = QTextEdit.ExtraSelection()
+        jump_color = QColor(self.settings.get("editor", "jump_highlight_color", "#FFD7A1"))
+        sel.format.setBackground(jump_color)
+        sel.format.setProperty(QTextFormat.Property.FullWidthSelection, True)
+        sel.cursor = cursor
+        sel.cursor.clearSelection()
+        self._temp_highlight = sel
+        # Refresh selections to include temp highlight
+        self.highlight_current_line()
+        # Auto-clear after duration
+        self._temp_highlight_timer.start(max(1, duration_ms))
+
+    def _clear_temp_highlight(self):
+        self._temp_highlight = None
+        self.highlight_current_line()
 
 
 class CodeEditorWidget(QWidget):

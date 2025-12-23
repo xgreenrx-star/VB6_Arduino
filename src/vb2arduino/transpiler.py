@@ -36,7 +36,8 @@ class VBTranspiler:
         self.pointer_vars.clear()
 
         current = None  # None, "setup", "loop", "function"
-        for raw in source.splitlines():
+        # Track VB source line numbers for error mapping
+        for vb_line_no, raw in enumerate(source.splitlines(), start=1):
             line = raw.strip()
             if not line or line.startswith("'"):
                 continue
@@ -50,16 +51,21 @@ class VBTranspiler:
                 continue
             
             if upper.startswith("CONST "):
+                # Emit a mapping marker to correlate C++ lines back to VB
+                self.global_lines.append(f"// __VB_LINE__:{vb_line_no}")
                 self.global_lines.append(self._emit_const(line))
                 continue
             if upper.startswith("DIM "):
                 target = self._target_lines(current)
                 statement = self._emit_dim(line)
                 # Add newlines to function statements for proper formatting
-                if current == "function" and statement:
-                    target.append(statement + "\n")
-                else:
-                    target.append(statement)
+                if statement:
+                    if current == "function":
+                        target.append(f"// __VB_LINE__:{vb_line_no}\n")
+                        target.append(statement + "\n")
+                    else:
+                        target.append(f"// __VB_LINE__:{vb_line_no}")
+                        target.append(statement)
                 continue
             if upper.startswith("SUB SETUP"):
                 current = "setup"
@@ -80,11 +86,14 @@ class VBTranspiler:
 
             target = self._target_lines(current)
             statement = self._emit_statement(line)
-            # Add newlines to function statements for proper formatting
-            if current == "function" and statement:
-                target.append(statement + "\n")
-            else:
-                target.append(statement)
+            # Add mapping marker and newlines to function statements for proper formatting
+            if statement:
+                if current == "function":
+                    target.append(f"// __VB_LINE__:{vb_line_no}\n")
+                    target.append(statement + "\n")
+                else:
+                    target.append(f"// __VB_LINE__:{vb_line_no}")
+                    target.append(statement)
 
         cpp = self._render_cpp()
         return TranspileResult(cpp=cpp)

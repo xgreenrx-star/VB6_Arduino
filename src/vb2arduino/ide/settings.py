@@ -17,6 +17,12 @@ class Settings:
             "current_line_color": "#FFFFCC",
             "line_number_bg": "#F0F0F0",
             "line_number_fg": "#808080",
+            "jump_highlight_color": "#FFD7A1",
+            "jump_highlight_duration_ms": 3000,
+            "show_compile_success_popup": true,
+            "show_upload_success_popup": true,
+            "show_compile_failure_popup": true,
+            "show_upload_failure_popup": true,
         },
         "syntax": {
             "keyword_color": "#0000FF",

@@ -3,13 +3,14 @@
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QToolBar, QPushButton, QComboBox, QLabel, QMessageBox, QFileDialog,
-    QStatusBar, QDialog, QProgressDialog
+    QStatusBar, QDialog, QProgressDialog, QListWidget, QListWidgetItem
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QIcon, QAction
 import pathlib
 import subprocess
 import tempfile
+import re
 
 from vb2arduino.ide.editor import CodeEditorWidget
 from vb2arduino.ide.serial_monitor import SerialMonitor
@@ -482,11 +483,25 @@ End Sub
             
             if result.returncode == 0:
                 self.status.showMessage("✓ Compilation successful")
-                QMessageBox.information(self, "Success", "Code compiled successfully!")
+                if self.settings.get("editor", "show_compile_success_popup", True):
+                    QMessageBox.information(self, "Success", "Code compiled successfully!")
             else:
                 self.status.showMessage("✗ Compilation failed")
-                QMessageBox.warning(self, "Compilation Error", 
-                    f"Compilation failed:\n\n{result.stderr[:500]}")
+                # Parse errors, map to VB lines, and show clickable list
+                vb_map = self._build_vb_line_map(cpp_file)
+                errors = self._parse_compile_errors(result.stderr, cpp_file.name)
+                if errors:
+                    if self.settings.get("editor", "show_compile_failure_popup", True):
+                        self._show_compile_errors(errors, vb_map)
+                    else:
+                        # Show concise status only; no popup
+                        self.status.showMessage("✗ Compilation failed - see status output", 5000)
+                else:
+                    if self.settings.get("editor", "show_compile_failure_popup", True):
+                        QMessageBox.warning(self, "Compilation Error", 
+                            f"Compilation failed:\n\n{result.stderr[:500]}")
+                    else:
+                        self.status.showMessage("✗ Compilation failed", 5000)
                     
         except Exception as e:
             self.status.showMessage("✗ Error")
@@ -565,11 +580,24 @@ End Sub
             
             if result.returncode == 0:
                 self.status.showMessage("✓ Upload successful")
-                QMessageBox.information(self, "Success", "Code uploaded successfully!")
+                if self.settings.get("editor", "show_upload_success_popup", True):
+                    QMessageBox.information(self, "Success", "Code uploaded successfully!")
             else:
                 self.status.showMessage("✗ Upload failed")
-                QMessageBox.warning(self, "Upload Error",
-                    f"Upload failed:\n\n{result.stderr[:500]}")
+                # On compile/upload error, parse and present clickable errors
+                vb_map = self._build_vb_line_map(cpp_file)
+                errors = self._parse_compile_errors(result.stderr, cpp_file.name)
+                if errors:
+                    if self.settings.get("editor", "show_upload_failure_popup", True):
+                        self._show_compile_errors(errors, vb_map)
+                    else:
+                        self.status.showMessage("✗ Upload failed - see status output", 5000)
+                else:
+                    if self.settings.get("editor", "show_upload_failure_popup", True):
+                        QMessageBox.warning(self, "Upload Error",
+                            f"Upload failed:\n\n{result.stderr[:500]}")
+                    else:
+                        self.status.showMessage("✗ Upload failed", 5000)
                     
         except Exception as e:
             self.status.showMessage("✗ Error")
@@ -606,6 +634,12 @@ End Sub
             self.editor.setTextCursor(cursor)
             self.editor.centerCursor()
             self.editor.setFocus()
+            # Temporary highlight to make the target line obvious
+            try:
+                duration = int(self.settings.get("editor", "jump_highlight_duration_ms", 3000))
+                self.editor.highlight_line(line_number, duration)
+            except Exception:
+                pass
         
     def update_title(self):
         """Update window title."""
@@ -617,6 +651,74 @@ End Sub
         if self.is_modified:
             title += " *"
         self.setWindowTitle(title)
+
+    def _build_vb_line_map(self, cpp_path: pathlib.Path) -> dict[int, int]:
+        """Build a map of C++ line -> VB line by scanning marker comments.
+
+        We emit lines like: // __VB_LINE__:N before each generated statement.
+        We map each subsequent C++ line to the most recent VB marker.
+        """
+        try:
+            lines = cpp_path.read_text(encoding='utf-8').splitlines()
+        except Exception:
+            return {}
+        vb_map: dict[int, int] = {}
+        current_vb = None
+        for idx, l in enumerate(lines, start=1):
+            if l.strip().startswith("// __VB_LINE__:"):
+                try:
+                    current_vb = int(l.strip().split(":", 1)[1])
+                except Exception:
+                    current_vb = current_vb
+            vb_map[idx] = current_vb if current_vb is not None else 1
+        return vb_map
+
+    def _parse_compile_errors(self, stderr: str, cpp_name: str) -> list[tuple[int, str, str]]:
+        """Parse compiler stderr to extract (cpp_line, level, message) for main file.
+
+        Matches lines like: src/main.cpp:123:45: error: message
+        Returns a list of tuples.
+        """
+        errors: list[tuple[int, str, str]] = []
+        for line in stderr.splitlines():
+            # General gcc/clang style: <file>:<line>:<col>: <level>: <message>
+            m = re.match(r"(.+?):(\d+):\d+:\s+(fatal error|error|warning):\s+(.*)", line)
+            if m:
+                file_path, line_no, level, msg = m.groups()
+                if file_path.endswith(cpp_name):
+                    try:
+                        errors.append((int(line_no), level, msg))
+                    except ValueError:
+                        pass
+        return errors
+
+    def _show_compile_errors(self, errors: list[tuple[int, str, str]], vb_map: dict[int, int]):
+        """Show a clickable list of compile errors mapped to VB lines."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Compilation Errors")
+        layout = QVBoxLayout(dlg)
+        lst = QListWidget(dlg)
+        layout.addWidget(lst)
+        # Populate list with VB line numbers and messages
+        for cpp_line, level, msg in errors:
+            vb_line = vb_map.get(cpp_line, 1)
+            item = QListWidgetItem(f"VB line {vb_line}: {level} - {msg}")
+            # store VB line and message in item data
+            item.setData(Qt.ItemDataRole.UserRole, (vb_line, level, msg))
+            lst.addItem(item)
+
+        def on_item_activated(item: QListWidgetItem):
+            data = item.data(Qt.ItemDataRole.UserRole)
+            if isinstance(data, tuple) and len(data) == 3:
+                vb_line, level, msg = data
+                if isinstance(vb_line, int):
+                    self.goto_line(vb_line)
+                    # Update status bar with concise hint
+                    self.status.showMessage(f"{level.capitalize()} at VB line {vb_line}: {msg}", 5000)
+        lst.itemActivated.connect(on_item_activated)
+        lst.itemDoubleClicked.connect(on_item_activated)
+        dlg.resize(800, 400)
+        dlg.show()
         
     def check_save_changes(self):
         """Check if unsaved changes exist and prompt user."""
