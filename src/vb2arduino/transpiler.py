@@ -264,7 +264,7 @@ class VBTranspiler:
             (r"ANALOGREAD\s+(\w+)", lambda m: f"analogRead({m.group(1)})"),
             (r"DELAY\s+(.+)", lambda m: f"delay({self._expr(m.group(1))});"),
             (r"ANALOGWRITE\s+(\w+),\s*(.+)", lambda m: f"analogWrite({m.group(1)}, {self._expr(m.group(2))});"),
-            (r"SERIALBEGIN\s+(.+)", lambda m: f"Serial.begin({self._expr(m.group(1))});"),
+                (r"SERIALBEGIN\s+(.+)", lambda m: "Serial.begin(" + self._expr(m.group(1)) + ");\n    Serial.setRxBufferSize(1024);\n    Serial.setTxBufferSize(1024);"),
             (r"SERIALPRINTLINE\s+(.+)", lambda m: f"Serial.println({self._expr(m.group(1))});"),
             (r"SERIALPRINT\s+(.+)", lambda m: f"Serial.print({self._expr(m.group(1))});"),
         ]
@@ -421,8 +421,8 @@ class VBTranspiler:
             setup_section = "delay(1000);"
         
         loop_section = "\n    ".join(self.loop_lines) if self.loop_lines else ""
-        
-        return f"""#include <Arduino.h>
+
+        cpp_body = f"""#include <Arduino.h>
 {includes_section}{forward_declarations}{globals_section}
 
 {functions_section}void setup() {{
@@ -433,6 +433,19 @@ void loop() {{
     {loop_section}
 }}
 """
+
+        return self._with_line_numbers(cpp_body)
+
+    def _with_line_numbers(self, text: str) -> str:
+        """Attach line-number suffix comments for reference only."""
+        numbered: list[str] = []
+        for idx, line in enumerate(text.splitlines(), start=1):
+            stripped = line.rstrip("\n")
+            if stripped:
+                numbered.append(f"{stripped} // L{idx:04d}")
+            else:
+                numbered.append(f"// L{idx:04d}")
+        return "\n".join(numbered) + "\n"
 
 
 def transpile_string(source: str) -> str:
