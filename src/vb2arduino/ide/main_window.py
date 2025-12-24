@@ -15,7 +15,11 @@ import re
 from vb2arduino.ide.editor import CodeEditorWidget
 from vb2arduino.ide.serial_monitor import SerialMonitor
 from vb2arduino.ide.project_tree import ProjectTreeView
-from vb2arduino.ide.utils import get_available_ports, get_platformio_boards
+from vb2arduino.ide.utils import (
+    get_available_ports,
+    get_platformio_boards,
+    auto_detect_board_and_port,
+)
 from vb2arduino.ide.settings import Settings
 from vb2arduino.ide.settings_dialog import SettingsDialog
 from vb2arduino.ide.libraries_dialog import LibrariesDialog
@@ -213,6 +217,9 @@ class MainWindow(QMainWindow):
         serial_btn.setChecked(True)
         serial_btn.toggled.connect(self.toggle_serial_monitor)
         toolbar.addWidget(serial_btn)
+
+        # After toolbar setup, try auto-selecting detected board/port
+        self.auto_select_defaults()
         
     def create_menus(self):
         """Create menu bar."""
@@ -455,9 +462,12 @@ End Sub
             cpp_file = src_dir / "main.cpp"
             cpp_file.write_text(cpp_code, encoding='utf-8')
             
-            # Get board ID and platform
+            # Get board ID and platform (try auto-detect if none selected)
             board = self.board_combo.currentData()
-            if not board:  # Category header selected
+            if not board:
+                self.auto_select_defaults()
+                board = self.board_combo.currentData()
+            if not board:  # Still not selected (likely category header)
                 QMessageBox.warning(self, "No Board", "Please select a board, not a category header.")
                 self.status.showMessage("✗ No board selected")
                 return
@@ -526,6 +536,11 @@ End Sub
             
         port = self.port_combo.currentText()
         if not port:
+            # Try to auto-detect
+            self.refresh_ports()
+            self.auto_select_defaults()
+            port = self.port_combo.currentText()
+        if not port:
             QMessageBox.warning(self, "No Port", "Please select a serial port first.")
             return
             
@@ -551,9 +566,12 @@ End Sub
             cpp_file = src_dir / "main.cpp"
             cpp_file.write_text(cpp_code, encoding='utf-8')
             
-            # Get board ID and platform
+            # Get board ID and platform (try auto-detect if none selected)
             board = self.board_combo.currentData()
-            if not board:  # Category header selected
+            if not board:
+                self.auto_select_defaults()
+                board = self.board_combo.currentData()
+            if not board:  # Still not selected (likely category header)
                 QMessageBox.warning(self, "No Board", "Please select a board, not a category header.")
                 self.status.showMessage("✗ No board selected")
                 return
@@ -610,6 +628,9 @@ End Sub
         ports = get_available_ports()
         self.port_combo.clear()
         self.port_combo.addItems(ports)
+        # Auto-select port if nothing chosen yet
+        if not self.port_combo.currentText():
+            self.auto_select_defaults()
         
     def toggle_serial_monitor(self, checked):
         """Toggle serial monitor visibility."""
@@ -651,6 +672,29 @@ End Sub
         if self.is_modified:
             title += " *"
         self.setWindowTitle(title)
+
+    def auto_select_defaults(self):
+        """Auto-detect board and port via PlatformIO and set defaults."""
+        try:
+            board, port = auto_detect_board_and_port()
+        except Exception:
+            board, port = (None, None)
+
+        # Set port if detected and available
+        if port:
+            idx = self.port_combo.findText(port)
+            if idx != -1 and not self.port_combo.currentText():
+                self.port_combo.setCurrentIndex(idx)
+                self.status.showMessage(f"Detected port: {port}", 3000)
+
+        # Set board if detected and no valid board selected yet
+        current_board = self.board_combo.currentData()
+        if board and (current_board is None):
+            for i in range(self.board_combo.count()):
+                if self.board_combo.itemData(i) == board:
+                    self.board_combo.setCurrentIndex(i)
+                    self.status.showMessage(f"Detected board: {board}", 3000)
+                    break
 
     def _build_vb_line_map(self, cpp_path: pathlib.Path) -> dict[int, int]:
         """Build a map of C++ line -> VB line by scanning marker comments.

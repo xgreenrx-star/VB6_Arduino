@@ -2,6 +2,7 @@
 
 import serial.tools.list_ports
 import subprocess
+import json
 
 
 def get_available_ports():
@@ -47,3 +48,84 @@ def check_platformio_installed():
         return result.returncode == 0
     except (subprocess.SubprocessError, FileNotFoundError):
         return False
+
+
+def get_pio_devices():
+    """Return PlatformIO devices via `pio device list --json-output`.
+
+    Returns:
+        list[dict]: Device entries with fields like 'port', 'hwid', 'protocol', 'properties'.
+    """
+    try:
+        result = subprocess.run(
+            ["pio", "device", "list", "--json-output"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        if result.returncode != 0:
+            return []
+        return json.loads(result.stdout or "[]")
+    except Exception:
+        return []
+
+
+def auto_detect_board_and_port():
+    """Heuristically detect board and port from PlatformIO devices.
+
+    Returns:
+        tuple[str|None, str|None]: (board_id, port) best guesses, or (None, None).
+    """
+    devices = get_pio_devices()
+    if not devices:
+        # Fallback to pyserial ports if pio output not available
+        ports = get_available_ports()
+        return (None, ports[0] if ports else None)
+
+    # Known vendor VID mappings (hex strings without 0x)
+    VIDS = {
+        "303a": "espressif",  # Espressif Systems
+        "2341": "arduino",    # Arduino LLC
+        "2e8a": "raspberrypi",  # Raspberry Pi (RP2040)
+        "10c4": "silabs",     # CP210x (used by many boards)
+        "1a86": "wch",        # CH340 (used by many boards)
+    }
+
+    # Default guesses per vendor
+    DEFAULT_BOARD_BY_VENDOR = {
+        "espressif": "esp32-s3-devkitc-1",
+        "arduino": "uno",
+        "raspberrypi": "pico",
+    }
+
+    def parse_vid(hwid: str | None) -> str | None:
+        if not hwid:
+            return None
+        # hwid may contain 'USB VID:PID=303A:1001'
+        try:
+            if "VID:PID=" in hwid:
+                vid_pid = hwid.split("VID:PID=", 1)[1].split()[0]
+                vid = vid_pid.split(":")[0].lower()
+                return vid
+        except Exception:
+            return None
+        return None
+
+    # Prefer USB serial devices
+    for dev in devices:
+        port = dev.get("port")
+        hwid = dev.get("hwid") or dev.get("hardware_id")
+        vid = parse_vid(hwid)
+        vendor_key = VIDS.get(vid) if vid else None
+        # Choose board based on vendor
+        board = DEFAULT_BOARD_BY_VENDOR.get(vendor_key) if vendor_key else None
+        # If unknown vendor, pick ESP32 DevKit as safe default when ttyUSB/ACM present
+        if not board and port:
+            if str(port).lower().find("ttyusb") >= 0 or str(port).lower().find("ttyacm") >= 0:
+                board = "esp32dev"
+        if port:
+            return (board, port)
+
+    # Fallback: first available port only
+    ports = get_available_ports()
+    return (None, ports[0] if ports else None)

@@ -43,6 +43,7 @@ If `pio` is not on PATH, run as `python -m platformio ...`.
   - Board dropdown with common ESP32/Arduino/RP2040 IDs.
   - Port dropdown + refresh.
   - Serial Monitor toggle.
+  - Auto-detect on startup: attempts to select a detected board and port.
 - **Menus**:
   - File: New/Open/Save/Save As/Quit (unsaved-changes prompt).
   - Edit: Undo/Redo/Cut/Copy/Paste.
@@ -134,6 +135,7 @@ vb2arduino input.vb --out generated --board esp32-s3-devkitm-1 --build --upload 
 - **PlatformIO not found**: ensure `pio` on PATH or use `python -m platformio`.
 - **Board not selected**: pick a concrete board (not category header) in toolbar/menu.
 - **Upload needs port**: select correct `COMx` (Windows) or `/dev/ttyUSB*` `/dev/ttyACM*` (Linux/macOS).
+- **Auto-detect didn’t select anything**: Ensure your board is connected and recognized by `pio device list`. The IDE heuristically maps USB VID vendors (Espressif/Arduino/Raspberry Pi) to common boards. You can always pick the exact board/port manually.
 - **BLE setValue(String) error**: use `command.c_str()` (already applied in examples).
 - **Preferences flush error**: removed; ESP32 Preferences does not expose `flush`.
 - **Qt accessibility warning**: benign message on Linux; does not affect functionality.
