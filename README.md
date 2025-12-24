@@ -10,6 +10,12 @@ A VB6-like language transpiler and IDE that converts Visual Basic syntax to Ardu
 - **PlatformIO Integration**: Built-in support for compiling and uploading to microcontrollers
 - **ESP32 Support**: Tested with ESP32-S3 and other Arduino-compatible boards
 - **CLI and IDE**: Use command-line tools or graphical interface
+- **Libraries Manager**: Curated catalog with board-aware recommendations; auto-download via PlatformIO
+- **Pin Configuration**: Board templates with auto-load; save/load/delete custom templates per board
+- **Build Flags**: Add custom compiler defines merged with board-required flags
+- **Auto-Detection**: Board and port auto-detection on startup; visual indicators
+- **Error Mapping**: Compilation errors map back to VB lines with clickable navigation
+- **Error Copy**: Right-click errors to copy single or all to clipboard
 
 ## Supported VB Subset
 
@@ -49,6 +55,21 @@ A VB6-like language transpiler and IDE that converts Visual Basic syntax to Ardu
 
 ## Installation
 
+### Option 1: Download Pre-built Executable (Recommended)
+
+**No Python installation required!**
+
+1. Go to [GitHub Releases](https://github.com/xgreenrx-star/VB6_Arduino/releases)
+2. Download for your platform:
+   - **Windows**: `vb2arduino-ide-windows.zip`
+   - **Linux**: `vb2arduino-ide-linux.tar.gz`
+   - **macOS**: `vb2arduino-ide-macos.tar.gz`
+3. Extract and run the executable
+
+See [RELEASES.md](RELEASES.md) for detailed instructions.
+
+### Option 2: Run from Source
+
 ```bash
 # Clone the repository
 git clone https://github.com/xgreenrx-star/vb2arduino.git
@@ -60,10 +81,11 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 # Install in development mode
 pip install -e .
-
-# Or install from PyPI (when available)
-pip install vb2arduino
 ```
+
+### Option 3: Build Your Own Executable
+
+See [BUILD.md](BUILD.md) for instructions on building standalone executables with PyInstaller.
 
 ## Prerequisites
 
@@ -139,13 +161,16 @@ The VB2Arduino IDE provides an Arduino IDE-like experience:
 - **Syntax Highlighting**: VB keywords, functions, constants, strings, and comments
 - **Line Numbers**: Easy code navigation
 - **Current Line Highlight**: Visual feedback for cursor position
+- **Procedure Dropdown**: Quick navigation to Sub/Function definitions
+- **Project Tree**: Visual structure showing all procedures
 
 ### Toolbar
 - **Verify (✓)**: Transpile and compile code without uploading
 - **Upload (→)**: Compile and upload to selected board
-- **Board Selection**: Choose from common Arduino/ESP32 boards
-- **Port Selection**: Automatic detection of serial ports with refresh button
+- **Board Selection**: Choose from common Arduino/ESP32 boards with auto-detection
+- **Port Selection**: Automatic detection of serial ports with refresh button and auto-detection
 - **Serial Monitor**: Toggle serial monitor visibility
+- **Auto-Detect Chips**: Visual indicators show when board/port were auto-detected
 
 ### Serial Monitor
 - **Real-time Communication**: Send and receive data from microcontroller
@@ -153,10 +178,23 @@ The VB2Arduino IDE provides an Arduino IDE-like experience:
 - **Connect/Disconnect**: Manual connection control
 - **Input/Output**: Text area for received data and line input for sending
 
+### Tools Menu
+- **Manage Libraries**: Browse curated library catalog, board-aware recommendations, custom adds
+- **Configure Pins**: Load board templates, edit pins by category, save/load/delete custom templates
+- **Build Flags**: Add/remove compiler defines for project-specific configuration
+- **Serial Monitor**: Open/close serial port monitor
+- **Settings**: Customize editor colors, behavior, and pop-up notifications
+
 ### File Operations
 - New, Open, Save, Save As
 - Unsaved changes detection
 - Default blink LED template
+
+### Error Handling
+- **Clickable Error List**: Double-click errors to jump to VB line
+- **VB Line Mapping**: Compiler errors automatically mapped back to source code
+- **Error Copy**: Right-click to copy single error or all errors to clipboard
+- **Status Hints**: Concise error summary shown when navigating to errors
 
 ## Command-Line Options
 
@@ -227,13 +265,31 @@ vb2arduino/
 Any board supported by PlatformIO works. Common examples:
 
 - `esp32-s3-devkitm-1` — ESP32-S3
+- `esp32-s3-devkitc-1` — ESP32-S3 DevKit-C
+- `esp32-s3-lcd-1.47` — **ESP32-S3 with 1.47" ST7789 LCD** (pre-configured pins & build flags)
 - `esp32dev` — ESP32
 - `uno` — Arduino Uno
 - `mega2560` — Arduino Mega
 - `nano_33_iot` — Arduino Nano 33 IoT
-- `teensy40` — Teensy 4.0
+- `pico` — Raspberry Pi Pico
 
 See [PlatformIO Boards](https://docs.platformio.org/en/latest/boards/index.html) for full list.
+
+### ESP32-S3 LCD 1.47" (ST7789)
+
+When you select "ESP32-S3-LCD-1.47" in the IDE, default pins and build flags are automatically configured for TFT_eSPI:
+
+**Pins (HSPI)**:
+- MOSI: 45 | SCLK: 40 | CS: 42 | DC: 41 | RST: -1 | BL: 46
+
+**Build Flags**:
+```
+-DST7789_DRIVER -DTFT_WIDTH=172 -DTFT_HEIGHT=320 -DTFT_ROTATION=0
+-DTFT_MOSI=45 -DTFT_SCLK=40 -DTFT_CS=42 -DTFT_DC=41 -DTFT_RST=-1
+-DTFT_BL=46 -DTOUCH_CS=-1 -DUSE_HSPI_PORT -DTFT_BL_ON=HIGH -DSPI_FREQUENCY=40000000
+```
+
+You can further customize these in Tools → Configure Pins.
 
 ## Limitations
 
