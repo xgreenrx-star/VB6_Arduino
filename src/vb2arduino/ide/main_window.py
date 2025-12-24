@@ -3,10 +3,10 @@
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QToolBar, QPushButton, QComboBox, QLabel, QMessageBox, QFileDialog,
-    QStatusBar, QDialog, QProgressDialog, QListWidget, QListWidgetItem
+    QStatusBar, QDialog, QProgressDialog, QListWidget, QListWidgetItem, QMenu
 )
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QIcon, QAction
+from PyQt6.QtGui import QIcon, QAction, QClipboard
 import pathlib
 import subprocess
 import tempfile
@@ -23,6 +23,10 @@ from vb2arduino.ide.utils import (
 from vb2arduino.ide.settings import Settings
 from vb2arduino.ide.settings_dialog import SettingsDialog
 from vb2arduino.ide.libraries_dialog import LibrariesDialog
+from vb2arduino.ide.manage_libraries_dialog import LibrariesDialog as ManageLibrariesDialog
+from vb2arduino.ide.pin_configuration_dialog import PinConfigurationDialog
+from vb2arduino.ide.pin_templates import get_template_for_board
+from vb2arduino.ide.project_config import ProjectConfig
 from vb2arduino import transpile_string
 
 
@@ -32,6 +36,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.settings = Settings()
+        self.project_config = ProjectConfig()  # Load project configuration
         self.current_file = None
         self.is_modified = False
         self.build_output_dir = pathlib.Path(tempfile.gettempdir()) / "vb2arduino_build"
@@ -136,6 +141,12 @@ class MainWindow(QMainWindow):
         toolbar = QToolBar("Main Toolbar")
         toolbar.setMovable(False)
         self.addToolBar(toolbar)
+
+        # Track auto-detected marks to revert labels on manual change
+        self._auto_board_mark_idx = None
+        self._auto_port_mark_idx = None
+        self._board_original_text = {}
+        self._port_original_text = {}
         
         # Compile button (was Verify)
         verify_btn = QPushButton("✓ Compile")
@@ -160,6 +171,7 @@ class MainWindow(QMainWindow):
             ("ESP32", [
                 ("ESP32-S3 DevKitM-1", "esp32-s3-devkitm-1"),
                 ("ESP32-S3 DevKitC-1", "esp32-s3-devkitc-1"),
+                ("ESP32-S3-LCD-1.47", "esp32-s3-devkitc-1"),
                 ("ESP32 Dev Module", "esp32dev"),
                 ("ESP32-C3 DevKitM-1", "esp32-c3-devkitm-1"),
                 ("ESP32-S2 Saola-1", "esp32-s2-saola-1"),
@@ -193,6 +205,18 @@ class MainWindow(QMainWindow):
         
         self.board_combo.setMinimumWidth(250)
         toolbar.addWidget(self.board_combo)
+        # Clear [Auto] badge when user changes selection
+        self.board_combo.currentIndexChanged.connect(self._clear_board_auto_mark)
+        # Load pin template when board changes
+        self.board_combo.currentIndexChanged.connect(self._on_board_changed)
+        # Persistent chip indicating auto-detection
+        self.board_auto_chip = QLabel("Auto")
+        self.board_auto_chip.setVisible(False)
+        self.board_auto_chip.setStyleSheet(
+            "QLabel{background:#E6F4EA;color:#137333;border-radius:4px;"
+            "padding:1px 4px;font-size:10px;border:1px solid #CDE9D6;}"
+        )
+        toolbar.addWidget(self.board_auto_chip)
         
         toolbar.addSeparator()
         
@@ -202,6 +226,17 @@ class MainWindow(QMainWindow):
         self.refresh_ports()
         self.port_combo.setMinimumWidth(150)
         toolbar.addWidget(self.port_combo)
+        # Clear [Auto] badge when user changes selection and update serial monitor
+        self.port_combo.currentIndexChanged.connect(self._clear_port_auto_mark)
+        self.port_combo.currentIndexChanged.connect(self._on_port_changed)
+        # Persistent chip indicating auto-detection
+        self.port_auto_chip = QLabel("Auto")
+        self.port_auto_chip.setVisible(False)
+        self.port_auto_chip.setStyleSheet(
+            "QLabel{background:#E6F4EA;color:#137333;border-radius:4px;"
+            "padding:1px 4px;font-size:10px;border:1px solid #CDE9D6;}"
+        )
+        toolbar.addWidget(self.port_auto_chip)
         
         # Refresh ports button
         refresh_btn = QPushButton("↻")
@@ -311,6 +346,16 @@ class MainWindow(QMainWindow):
         serial_action.setShortcut("Ctrl+Shift+M")
         serial_action.triggered.connect(lambda: self.serial_monitor.setVisible(not self.serial_monitor.isVisible()))
         tools_menu.addAction(serial_action)
+        
+        libraries_action = QAction("Manage &Libraries...", self)
+        libraries_action.setShortcut("Ctrl+Shift+L")
+        libraries_action.triggered.connect(self.show_libraries_manager)
+        tools_menu.addAction(libraries_action)
+        
+        pins_action = QAction("Configure &Pins...", self)
+        pins_action.setShortcut("Ctrl+Shift+P")
+        pins_action.triggered.connect(self.show_pin_configuration)
+        tools_menu.addAction(pins_action)
         
         tools_menu.addSeparator()
         
@@ -476,13 +521,7 @@ End Sub
             
             # Create platformio.ini
             ini_file = self.build_output_dir / "platformio.ini"
-            ini_file.write_text(
-                f"[env:{board}]\n"
-                f"platform = {platform}\n"
-                f"board = {board}\n"
-                f"framework = arduino\n",
-                encoding='utf-8'
-            )
+            ini_file.write_text(self._platformio_ini_content(board, platform), encoding='utf-8')
             
             # Run PlatformIO compile
             result = subprocess.run(
@@ -490,6 +529,13 @@ End Sub
                 capture_output=True,
                 text=True
             )
+
+            # Persist logs for troubleshooting
+            try:
+                (self.build_output_dir / "compile_stdout.txt").write_text(result.stdout or "", encoding='utf-8')
+                (self.build_output_dir / "compile_stderr.txt").write_text(result.stderr or "", encoding='utf-8')
+            except Exception:
+                pass
             
             if result.returncode == 0:
                 self.status.showMessage("✓ Compilation successful")
@@ -580,13 +626,7 @@ End Sub
             
             # Create platformio.ini
             ini_file = self.build_output_dir / "platformio.ini"
-            ini_file.write_text(
-                f"[env:{board}]\n"
-                f"platform = {platform}\n"
-                f"board = {board}\n"
-                f"framework = arduino\n",
-                encoding='utf-8'
-            )
+            ini_file.write_text(self._platformio_ini_content(board, platform), encoding='utf-8')
             
             # Run PlatformIO upload
             result = subprocess.run(
@@ -595,6 +635,13 @@ End Sub
                 capture_output=True,
                 text=True
             )
+
+            # Persist logs for troubleshooting
+            try:
+                (self.build_output_dir / "upload_stdout.txt").write_text(result.stdout or "", encoding='utf-8')
+                (self.build_output_dir / "upload_stderr.txt").write_text(result.stderr or "", encoding='utf-8')
+            except Exception:
+                pass
             
             if result.returncode == 0:
                 self.status.showMessage("✓ Upload successful")
@@ -631,6 +678,14 @@ End Sub
         # Auto-select port if nothing chosen yet
         if not self.port_combo.currentText():
             self.auto_select_defaults()
+        
+    def _on_port_changed(self):
+        """Handle port selection change - update serial monitor."""
+        port = self.port_combo.currentText()
+        if port:
+            self.serial_monitor.set_port(port)
+        else:
+            self.serial_monitor.set_port(None)
         
     def toggle_serial_monitor(self, checked):
         """Toggle serial monitor visibility."""
@@ -685,7 +740,20 @@ End Sub
             idx = self.port_combo.findText(port)
             if idx != -1 and not self.port_combo.currentText():
                 self.port_combo.setCurrentIndex(idx)
-                self.status.showMessage(f"Detected port: {port}", 3000)
+                # Set a helpful tooltip and extend message duration
+                self.port_combo.setToolTip(f"Auto-detected: {port}")
+                self.status.showMessage(f"Detected port: {port}", 8000)
+                # Add [Auto] badge to the selected item
+                try:
+                    original = self.port_combo.itemText(idx)
+                    self._port_original_text[idx] = original
+                    if "[Auto]" not in original:
+                        self.port_combo.setItemText(idx, f"{original} [Auto]")
+                    self._auto_port_mark_idx = idx
+                except Exception:
+                    pass
+                # Show persistent auto chip
+                self.port_auto_chip.setVisible(True)
 
         # Set board if detected and no valid board selected yet
         current_board = self.board_combo.currentData()
@@ -693,8 +761,74 @@ End Sub
             for i in range(self.board_combo.count()):
                 if self.board_combo.itemData(i) == board:
                     self.board_combo.setCurrentIndex(i)
-                    self.status.showMessage(f"Detected board: {board}", 3000)
+                    # Tooltip + longer message for clarity
+                    name = self.board_combo.itemText(i)
+                    self.board_combo.setToolTip(f"Auto-detected: {name} ({board})")
+                    self.status.showMessage(f"Detected board: {board}", 8000)
+                    # Add [Auto] badge to the selected item
+                    try:
+                        original = self.board_combo.itemText(i)
+                        self._board_original_text[i] = original
+                        if "[Auto]" not in original:
+                            self.board_combo.setItemText(i, f"{original} [Auto]")
+                        self._auto_board_mark_idx = i
+                    except Exception:
+                        pass
+                    # Show persistent auto chip
+                    self.board_auto_chip.setVisible(True)
                     break
+
+    def _clear_board_auto_mark(self, idx: int):
+        """Remove [Auto] badge from board item when user manually changes selection."""
+        try:
+            if self._auto_board_mark_idx is not None:
+                original = self._board_original_text.get(self._auto_board_mark_idx)
+                if original is not None and self._auto_board_mark_idx < self.board_combo.count():
+                    self.board_combo.setItemText(self._auto_board_mark_idx, original)
+            self._auto_board_mark_idx = None
+            self.board_auto_chip.setVisible(False)
+        except Exception:
+            pass
+
+    def _clear_port_auto_mark(self, idx: int):
+        """Remove [Auto] badge from port item when user manually changes selection."""
+        try:
+            if self._auto_port_mark_idx is not None:
+                original = self._port_original_text.get(self._auto_port_mark_idx)
+                if original is not None and self._auto_port_mark_idx < self.port_combo.count():
+                    self.port_combo.setItemText(self._auto_port_mark_idx, original)
+            self._auto_port_mark_idx = None
+            self.port_auto_chip.setVisible(False)
+        except Exception:
+            pass
+
+    def _platformio_ini_content(self, board: str, platform: str) -> str:
+        """Generate platformio.ini content with libraries and build flags from project config."""
+        lines = [
+            f"[env:{board}]",
+            f"platform = {platform}",
+            f"board = {board}",
+            "framework = arduino",
+            "monitor_speed = 115200",
+        ]
+        
+        # Add libraries from project config
+        libraries = self.project_config.get_libraries()
+        if libraries:
+            lib_deps = ", ".join(libraries)
+            lines.append(f"lib_deps = {lib_deps}")
+        
+        # Build flags: merge board-required flags with user-defined flags
+        board_flags: list[str] = []
+        user_flags = self.project_config.get_build_flags() or []
+        # ESP32-S3 native USB requires these flags for CDC serial
+        if "s3" in board:
+            board_flags.extend(["-DARDUINO_USB_MODE=1", "-DARDUINO_USB_CDC_ON_BOOT=1"])
+            lines.append("upload_speed = 921600")
+        merged_flags = board_flags + user_flags
+        if merged_flags:
+            lines.append("build_flags = " + " ".join(merged_flags))
+        return "\n".join(lines) + "\n"
 
     def _build_vb_line_map(self, cpp_path: pathlib.Path) -> dict[int, int]:
         """Build a map of C++ line -> VB line by scanning marker comments.
@@ -759,6 +893,32 @@ End Sub
                     self.goto_line(vb_line)
                     # Update status bar with concise hint
                     self.status.showMessage(f"{level.capitalize()} at VB line {vb_line}: {msg}", 5000)
+        
+        # Context menu for copying error text
+        def on_context_menu(pos):
+            item = lst.itemAt(pos)
+            if item:
+                menu = QMenu(lst)
+                copy_action = menu.addAction("Copy Error")
+                copy_all_action = menu.addAction("Copy All Errors")
+                
+                def copy_error():
+                    clipboard = QApplication.clipboard()
+                    clipboard.setText(item.text())
+                    self.status.showMessage("Error copied to clipboard", 3000)
+                
+                def copy_all_errors():
+                    all_text = "\n".join([lst.item(i).text() for i in range(lst.count())])
+                    clipboard = QApplication.clipboard()
+                    clipboard.setText(all_text)
+                    self.status.showMessage(f"{lst.count()} errors copied to clipboard", 3000)
+                
+                copy_action.triggered.connect(copy_error)
+                copy_all_action.triggered.connect(copy_all_errors)
+                menu.exec(lst.mapToGlobal(pos))
+        
+        lst.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        lst.customContextMenuRequested.connect(on_context_menu)
         lst.itemActivated.connect(on_item_activated)
         lst.itemDoubleClicked.connect(on_item_activated)
         dlg.resize(800, 400)
@@ -804,6 +964,39 @@ End Sub
             # Apply new settings to editor
             self.editor.apply_settings(self.settings)
             self.status.showMessage("Settings applied", 2000)
+    
+    def show_libraries_manager(self):
+        """Show libraries manager dialog."""
+        # Get currently selected board
+        board = self.board_combo.currentData()
+        dialog = ManageLibrariesDialog(self.project_config, selected_board=board, parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.status.showMessage("Libraries updated", 2000)
+    
+    def show_pin_configuration(self):
+        """Show pin configuration dialog."""
+        board = self.board_combo.currentData()
+        dialog = PinConfigurationDialog(self.project_config, board_id=board, parent=self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            self.status.showMessage("Pin configuration updated", 2000)
+    
+    def _on_board_changed(self):
+        """Handle board selection change - auto-load pin template."""
+        board = self.board_combo.currentData()
+        if board:
+            # If UI selection indicates LCD 1.47 variant, load its template
+            display_name = self.board_combo.currentText() or ""
+            if ("LCD-1.47" in display_name) or ("LCS-1.47" in display_name):
+                alias_tpl = get_template_for_board("esp32-s3-lcd-1.47")
+                if alias_tpl:
+                    self.project_config.load_template(alias_tpl)
+                    return
+            # Otherwise load the standard template for the board id
+            template = get_template_for_board(board)
+            if template:
+                self.project_config.load_template(template)
+                # Silently load template without showing dialog
+                # User can still customize via Configure Pins menu
     
     def show_libraries(self):
         """Show library selection dialog."""
