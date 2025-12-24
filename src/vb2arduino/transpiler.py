@@ -412,7 +412,14 @@ class VBTranspiler:
         
         globals_section = "\n".join(self.global_lines)
         functions_section = "".join(self.function_lines) if self.function_lines else ""
-        setup_section = "\n    ".join(self.setup_lines) if self.setup_lines else ""
+        
+        # Add initialization delay at the start of setup for USB/serial init
+        setup_lines_list = self.setup_lines if self.setup_lines else []
+        if setup_lines_list:
+            setup_section = "delay(1000);\n    " + "\n    ".join(setup_lines_list)
+        else:
+            setup_section = "delay(1000);"
+        
         loop_section = "\n    ".join(self.loop_lines) if self.loop_lines else ""
         
         return f"""#include <Arduino.h>

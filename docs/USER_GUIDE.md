@@ -44,6 +44,14 @@ If `pio` is not on PATH, run as `python -m platformio ...`.
   - Port dropdown + refresh.
   - Serial Monitor toggle.
   - Auto-detect on startup: attempts to select a detected board and port.
+  - Hover hints: tooltips show when a board/port was auto-detected.
+  - Auto badge: the selected Board/Port label includes "[Auto]" when detection succeeds (clears when you change it).
+  - Auto chips: small "Auto" tags appear next to Board/Port when detection succeeds (they hide when you change selection).
+  - ESP32-S3 convenience: PlatformIO is generated with USB CDC flags and 115200 monitor speed; upload speed defaults to 921600 for S3 boards.
+ - **Libraries Manager**: Curated catalog with board-aware recommendations, category tabs, and custom adds; selections persist and emit `lib_deps` in `platformio.ini` so PlatformIO automatically downloads required libraries.
+ - **Pins Configuration**: Board templates auto-load on selection; edit pins by category (Basic/TFT/I2C/SPI). Save your current pins+flags as named templates and reload/delete later.
+ - **Build Flags**: A dedicated tab to add/remove compiler defines (e.g., `-D...`), merged with board-required flags in `platformio.ini`.
+ - **Error Copy**: Right-click errors in the error list to copy a single error or all errors to the clipboard.
 - **Menus**:
   - File: New/Open/Save/Save As/Quit (unsaved-changes prompt).
   - Edit: Undo/Redo/Cut/Copy/Paste.
@@ -62,6 +70,7 @@ If `pio` is not on PATH, run as `python -m platformio ...`.
 ## 3. Workflow
 1) Select board in toolbar.
 2) Optionally select serial port (needed for upload).
+ 3) (Optional) Tools → Manage Libraries to add dependencies; Tools → Configure Pins to load/edit board templates and define build flags.
 3) Write or open `.vb` sketch.
 4) Click `✓ Compile` to transpile+build with PlatformIO.
 5) Click `→ Upload` to flash (requires port).
@@ -136,12 +145,14 @@ vb2arduino input.vb --out generated --board esp32-s3-devkitm-1 --build --upload 
 - **Board not selected**: pick a concrete board (not category header) in toolbar/menu.
 - **Upload needs port**: select correct `COMx` (Windows) or `/dev/ttyUSB*` `/dev/ttyACM*` (Linux/macOS).
 - **Auto-detect didn’t select anything**: Ensure your board is connected and recognized by `pio device list`. The IDE heuristically maps USB VID vendors (Espressif/Arduino/Raspberry Pi) to common boards. You can always pick the exact board/port manually.
+- **How to tell it worked**: Watch the status bar for "Detected board/port" (now shown for ~8s), hover the dropdowns for "Auto-detected: ..." tooltips, and look for the "[Auto]" badge or small "Auto" chips next to the Board/Port fields.
 - **BLE setValue(String) error**: use `command.c_str()` (already applied in examples).
 - **Preferences flush error**: removed; ESP32 Preferences does not expose `flush`.
 - **Qt accessibility warning**: benign message on Linux; does not affect functionality.
+ - **Missing library headers (e.g., `TFT_eSPI.h`)**: Use Tools → Manage Libraries to add `TFT_eSPI`. The IDE writes `lib_deps` for PlatformIO, which automatically fetches libraries at build time.
 
 ## 7. Examples
-See `examples/` for ready-made sketches: `blink.vb`, `button_led.vb`, `serial_echo.vb`, `pwdongle_port.vb`, and demos.
+See `examples/` for ready-made sketches: `blink.vb`, `button_led.vb`, `serial_echo.vb`, `pwdongle_port.vb`, `lcd_hello.vb`, and demos.
 
 ## 8. Compile Errors & VB Line Mapping
 - When compilation/upload fails, the IDE parses compiler output and shows a clickable list of errors.
@@ -151,6 +162,51 @@ See `examples/` for ready-made sketches: `blink.vb`, `button_led.vb`, `serial_ec
 
 Notes:
 - If failure pop-ups are disabled in Settings, errors are reported via the status bar only and the clickable dialog is suppressed.
+
+## 10. Libraries Management
+- Open Tools → Manage Libraries to browse curated categories and board-aware recommendations.
+- Selected libraries are persisted to the project config and emitted as `lib_deps` in `platformio.ini`.
+- PlatformIO automatically downloads missing libraries listed in `lib_deps` during build.
+- You can add custom library names or PlatformIO registry identifiers.
+
+## 11. Pins & Templates
+- Open Tools → Configure Pins.
+- Pins tab shows board pin categories; load board template (if available) via the button or by changing the board in the toolbar.
+- Templates tab lets you:
+  - Save Current…: Save the current pins and build flags under a name (templates are filtered per-board).
+  - Load: Apply a saved template; pins and flags update immediately.
+  - Delete: Remove an unused template.
+- Build Flags tab: Add/remove flags like `-DST7789_DRIVER` or `-DUSE_HSPI_PORT`. These merge with board-required flags in the generated `platformio.ini`.
+
+## 12. Board-Specific Defaults
+### ESP32-S3 LCD 1.47 (ST7789)
+Selecting the "ESP32-S3-LCD-1.47" board variant in the toolbar applies a default display setup for TFT_eSPI with ST7789. The IDE sets pins and build flags automatically:
+
+Pins (HSPI on ESP32-S3):
+- MOSI: 45
+- SCLK: 40
+- CS: 42
+- DC: 41
+- RST: -1 (not used)
+- BL: 46
+
+Default build flags:
+- `-DST7789_DRIVER`
+- `-DTFT_WIDTH=172`
+- `-DTFT_HEIGHT=320`
+- `-DTFT_ROTATION=0`
+- `-DTFT_MOSI=45`
+- `-DTFT_SCLK=40`
+- `-DTFT_CS=42`
+- `-DTFT_DC=41`
+- `-DTFT_RST=-1`
+- `-DTFT_BL=46`
+- `-DTOUCH_CS=-1`
+- `-DUSE_HSPI_PORT`
+- `-DTFT_BL_ON=HIGH`
+- `-DSPI_FREQUENCY=40000000`
+
+These defaults are applied automatically when the board selection contains "LCD-1.47". You can further customize them in Tools → Configure Pins → Build Flags.
 
 ## 9. Settings
 Open Tools → Settings → Editor.

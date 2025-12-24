@@ -3,6 +3,8 @@
 import serial.tools.list_ports
 import subprocess
 import json
+import threading
+from typing import Optional, Callable
 
 
 def get_available_ports():
@@ -129,3 +131,43 @@ def auto_detect_board_and_port():
     # Fallback: first available port only
     ports = get_available_ports()
     return (None, ports[0] if ports else None)
+
+
+def search_platformio_libraries(query: str, callback: Optional[Callable] = None) -> list[dict]:
+    """Search PlatformIO library registry.
+    
+    Args:
+        query: Search term (e.g., 'WiFi', 'display', 'sensor')
+        callback: Optional callback(results) called when search completes
+        
+    Returns:
+        list[dict]: List of library info dicts with 'name', 'description', 'url', etc.
+    """
+    def run_search():
+        try:
+            result = subprocess.run(
+                ["pio", "lib", "search", query],
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            if result.returncode == 0:
+                # Parse output - pio lib search returns text table format
+                # For now, return empty list as parsing is complex
+                # In production, could implement text parsing or use JSON if available
+                libraries = []
+                if callback:
+                    callback(libraries)
+                return libraries
+            return []
+        except Exception:
+            return []
+    
+    # Run in thread to avoid blocking UI
+    if callback:
+        thread = threading.Thread(target=run_search, daemon=True)
+        thread.start()
+        return []
+    else:
+        return run_search()
+

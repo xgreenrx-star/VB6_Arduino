@@ -171,7 +171,7 @@ class MainWindow(QMainWindow):
             ("ESP32", [
                 ("ESP32-S3 DevKitM-1", "esp32-s3-devkitm-1"),
                 ("ESP32-S3 DevKitC-1", "esp32-s3-devkitc-1"),
-                ("ESP32-S3-LCD-1.47", "esp32-s3-devkitc-1"),
+                ("ESP32-S3-LCD-1.47", "esp32-s3-devkitm-1"),
                 ("ESP32 Dev Module", "esp32dev"),
                 ("ESP32-C3 DevKitM-1", "esp32-c3-devkitm-1"),
                 ("ESP32-S2 Saola-1", "esp32-s2-saola-1"),
@@ -824,10 +824,13 @@ End Sub
         
         # ESP32-S3 special handling
         if "s3" in board:
-            # Use UART mode (default) instead of USB CDC for better compatibility
-            # Most ESP32-S3 boards work better with UART serial communication
-            # USB CDC can have driver issues on some board variants
-            lines.append("upload_speed = 921600")  # High speed upload
+            # Enable USB CDC mode for serial communication on ESP32-S3
+            # CDC (Communications Device Class) allows native USB serial without UART-to-USB converter
+            board_flags.extend([
+                "-DARDUINO_USB_MODE=1",           # Enable native USB
+                "-DARDUINO_USB_CDC_ON_BOOT=1"     # Use CDC for Serial (Serial goes to USB, not UART)
+            ])
+            lines.append("upload_speed = 921600")  # High speed USB upload
         
         merged_flags = board_flags + user_flags
         if merged_flags:
