@@ -1,6 +1,8 @@
 # Releases
 
-VB2Arduino distributes pre-built executables for Windows, Linux, and macOS. No Python installation required!
+**Status: Beta (v0.05)**
+
+VB2Arduino is in active development. Pre-built executables are available for testing on Windows, Linux, and macOS. No Python installation required!
 
 ## Download Latest Release
 
@@ -73,13 +75,14 @@ See [BUILD.md](../BUILD.md) for details.
 
 ## Version History
 
-- **v1.0.0** (Dec 24, 2025) — Initial release with PyInstaller builds
+- **v0.05** (Dec 24, 2025) — Beta release with PyInstaller builds
   - VB6 transpiler with Arduino C++ output
   - PyQt6 GUI IDE
   - Libraries Manager
   - Pin Configuration
   - Serial Monitor
   - PlatformIO integration
+  - Cross-platform executables (Windows, Linux, macOS)
 
 ## Support
 
