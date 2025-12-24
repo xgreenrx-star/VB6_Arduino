@@ -821,13 +821,18 @@ End Sub
         # Build flags: merge board-required flags with user-defined flags
         board_flags: list[str] = []
         user_flags = self.project_config.get_build_flags() or []
-        # ESP32-S3 native USB requires these flags for CDC serial
+        
+        # ESP32-S3 special handling
         if "s3" in board:
-            board_flags.extend(["-DARDUINO_USB_MODE=1", "-DARDUINO_USB_CDC_ON_BOOT=1"])
-            lines.append("upload_speed = 921600")
+            # Use UART mode (default) instead of USB CDC for better compatibility
+            # Most ESP32-S3 boards work better with UART serial communication
+            # USB CDC can have driver issues on some board variants
+            lines.append("upload_speed = 921600")  # High speed upload
+        
         merged_flags = board_flags + user_flags
         if merged_flags:
             lines.append("build_flags = " + " ".join(merged_flags))
+        
         return "\n".join(lines) + "\n"
 
     def _build_vb_line_map(self, cpp_path: pathlib.Path) -> dict[int, int]:
