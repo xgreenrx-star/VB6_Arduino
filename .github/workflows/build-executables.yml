@@ -1,0 +1,104 @@
+name: Build Executables
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pyinstaller
+      
+      - name: Build executable
+        run: |
+          python -m PyInstaller vb2arduino-ide.spec --clean
+      
+      - name: Create Windows archive
+        run: |
+          Compress-Archive -Path dist/vb2arduino-ide -DestinationPath vb2arduino-ide-windows.zip
+        shell: powershell
+      
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: vb2arduino-ide-windows.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-linux:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pyinstaller
+      
+      - name: Build executable
+        run: |
+          python -m PyInstaller vb2arduino-ide.spec --clean
+      
+      - name: Create Linux archive
+        run: |
+          cd dist && tar -czf ../vb2arduino-ide-linux.tar.gz vb2arduino-ide/
+      
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: vb2arduino-ide-linux.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-macos:
+    runs-on: macos-latest
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          pip install pyinstaller
+      
+      - name: Build executable
+        run: |
+          python -m PyInstaller vb2arduino-ide.spec --clean
+      
+      - name: Create macOS archive
+        run: |
+          cd dist && tar -czf ../vb2arduino-ide-macos.tar.gz vb2arduino-ide/
+      
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: vb2arduino-ide-macos.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
