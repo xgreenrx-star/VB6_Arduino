@@ -8,6 +8,10 @@ Dim tft As TFT_eSPI
 Sub Setup()
     SerialBegin 115200
     
+    ' Initialize backlight
+    PinMode 46, OUTPUT
+    DigitalWrite 46, HIGH
+    
     ' Initialize the display
     tft.init()
     tft.setRotation(1)

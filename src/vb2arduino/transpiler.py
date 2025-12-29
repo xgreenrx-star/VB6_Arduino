@@ -36,10 +36,20 @@ class VBTranspiler:
         self.pointer_vars.clear()
 
         current = None  # None, "setup", "loop", "function"
+        label_set = set()
         # Track VB source line numbers for error mapping
         for vb_line_no, raw in enumerate(source.splitlines(), start=1):
             line = raw.strip()
-            if not line or line.startswith("'"):
+            if not line or line.startswith("'") or line.upper().startswith("REM"):
+                # Support Rem as comment
+                continue
+
+            # Label: support (must be at start of line, not indented)
+            m_label = re.match(r"^(\w+):$", line)
+            if m_label:
+                label_set.add(m_label.group(1))
+                target = self._target_lines(current)
+                target.append(f"{m_label.group(1)}:")
                 continue
 
             upper = line.upper()
@@ -206,6 +216,111 @@ class VBTranspiler:
     def _emit_statement(self, line: str) -> str:
         upper = line.upper()
 
+        # --- Exit/Continue/Goto support ---
+        if upper == "EXIT SUB" or upper == "EXIT FUNCTION":
+            return "return;"
+        if upper == "EXIT FOR" or upper == "EXIT DO" or upper == "EXIT WHILE" or upper == "EXIT SELECT":
+            return "break;"
+        if upper == "CONTINUE FOR" or upper == "CONTINUE DO" or upper == "CONTINUE WHILE":
+            return "continue;"
+        m_goto = re.match(r"GOTO\s+(\w+)", upper)
+        if m_goto:
+            return f"goto {m_goto.group(1)};"
+
+        # --- InputBox/MsgBox ---
+        m_inputbox = re.match(r"INPUTBOX\s*\((.+)\)", line, re.IGNORECASE)
+        if m_inputbox:
+            # Stub: InputBox returns empty string
+            return "// TODO: InputBox not implemented (returns \"\")"
+        m_msgbox = re.match(r"MSGBOX\s*\((.+)\)", line, re.IGNORECASE)
+        if m_msgbox:
+            # Stub: MsgBox prints to Serial
+            return f"Serial.println({self._expr(m_msgbox.group(1))});"
+
+        # --- On Error ---
+        if upper.startswith("ON ERROR RESUME NEXT"):
+            return "// TODO: On Error Resume Next not implemented"
+        m_onerr = re.match(r"ON ERROR GOTO\s+(\w+)", upper)
+        if m_onerr:
+            return f"// TODO: On Error GoTo {m_onerr.group(1)} not implemented"
+
+        # --- With ... End With ---
+        if upper.startswith("WITH "):
+            return "// TODO: With block not implemented"
+        if upper == "END WITH":
+            return "// TODO: End With"
+
+        # --- Do Until / Loop Until ---
+        m_do_until = re.match(r"DO\s+UNTIL\s+(.+)", line, re.IGNORECASE)
+        if m_do_until:
+            cond = self._expr(m_do_until.group(1), is_condition=True)
+            self.block_stack.append("do")
+            return f"do {{ // until {cond}"
+        m_loop_until = re.match(r"LOOP\s+UNTIL\s+(.+)", line, re.IGNORECASE)
+        if m_loop_until:
+            if self.block_stack and self.block_stack[-1] == "do":
+                self.block_stack.pop()
+            cond = self._expr(m_loop_until.group(1), is_condition=True)
+            return f"}} while (!({cond}));"
+
+        # --- Static variable declaration ---
+        m_static = re.match(r"STATIC\s+(\w+)(?:\s+AS\s+([\w\*]+))?", line, re.IGNORECASE)
+        if m_static:
+            name, type_token = m_static.groups()
+            base_type, is_pointer = self._type_with_pointer(type_token)
+            c_type = self._map_type(base_type)
+            init_value = self._default_init(c_type)
+            if is_pointer:
+                return f"static {c_type}* {name} = nullptr;"
+            return f"static {c_type} {name} = {init_value};"
+
+        # --- Timer/Now/Date/Time ---
+        if upper == "TIMER":
+            return "millis()"
+        if upper == "NOW":
+            return "// TODO: Now not implemented"
+        if upper == "DATE":
+            return "// TODO: Date not implemented"
+        if upper == "TIME":
+            return "// TODO: Time not implemented"
+
+        # --- Const arrays ---
+        m_constarr = re.match(r"CONST\s+(\w+)\(\)\s+AS\s+(\w+)\s*=\s*\{(.+)\}", line, re.IGNORECASE)
+        if m_constarr:
+            name, typ, values = m_constarr.groups()
+            c_type = self._map_type(typ)
+            vals = ",".join([self._expr(v.strip()) for v in values.split(",")])
+            return f"const {c_type} {name}[] = {{{vals}}};"
+
+        # --- Array assignment/initialization ---
+        m_dimarr = re.match(r"DIM\s+(\w+)\(\)\s+AS\s+(\w+)\s*=\s*\{(.+)\}", line, re.IGNORECASE)
+        if m_dimarr:
+            name, typ, values = m_dimarr.groups()
+            c_type = self._map_type(typ)
+            vals = ",".join([self._expr(v.strip()) for v in values.split(",")])
+            return f"{c_type} {name}[] = {{{vals}}};"
+
+        # --- Property Get/Let/Set ---
+        if upper.startswith("PROPERTY "):
+            return "// TODO: Property Get/Let/Set not implemented"
+        if upper == "END PROPERTY":
+            return "// TODO: End Property"
+
+        # --- Type ... End Type ---
+        if upper.startswith("TYPE "):
+            m = re.match(r"TYPE\s+(\w+)", line, re.IGNORECASE)
+            if m:
+                return f"struct {m.group(1)} {{"
+            return "// TODO: Type not recognized"
+        if upper == "END TYPE":
+            return "};"
+
+        # --- For Each ... In ... ---
+        m_foreach = re.match(r"FOR EACH\s+(\w+)\s+IN\s+(\w+)", line, re.IGNORECASE)
+        if m_foreach:
+            var, arr = m_foreach.groups()
+            return f"for (auto& {var} : {arr}) {{"
+        
         # Control flow
         if upper.startswith("IF "):
             m = re.match(r"IF\s+(.+?)\s+THEN", line, re.IGNORECASE)
@@ -255,6 +370,26 @@ class VBTranspiler:
             if m:
                 return f"}} while ({self._expr(m.group(1), is_condition=True)});"
             return "} while (true);"
+
+        # --- Select Case support ---
+        if upper.startswith("SELECT CASE "):
+            m = re.match(r"SELECT\s+CASE\s+(.+)", line, re.IGNORECASE)
+            expr = self._expr(m.group(1)) if m else "/*expr*/"
+            self.block_stack.append("select")
+            return f"switch ({expr}) {{"
+        if upper.startswith("CASE ELSE"):
+            return "default:"
+        if upper.startswith("CASE "):
+            # Support multiple values: CASE 1, 2, 3
+            m = re.match(r"CASE\s+(.+)", line, re.IGNORECASE)
+            if m:
+                values = [v.strip() for v in m.group(1).split(",")]
+                cases = "\n".join([f"case {self._expr(v)}:" for v in values])
+                return cases
+        if upper == "END SELECT":
+            if self.block_stack and self.block_stack[-1] == "select":
+                self.block_stack.pop()
+            return "}"
 
         # I/O helpers
         io_patterns = [
@@ -317,7 +452,25 @@ class VBTranspiler:
 
     def _expr(self, expr: str, is_condition: bool = False) -> str:
         expr = expr.strip()
-        
+        # --- Hex/Oct/Bin literals ---
+        expr = re.sub(r"&H([0-9A-Fa-f]+)", lambda m: f"0x{m.group(1)}", expr)
+        expr = re.sub(r"&O([0-7]+)", lambda m: f"0{oct(int(m.group(1), 8))[2:]}", expr)
+        expr = re.sub(r"&B([01]+)", lambda m: f"0b{m.group(1)}", expr)
+        # --- String manipulation functions ---
+        expr = re.sub(r"\bLEFT\s*\(([^,]+),\s*([^)]+)\)", r"\1.substring(0, \2)", expr, flags=re.IGNORECASE)
+        expr = re.sub(r"\bRIGHT\s*\(([^,]+),\s*([^)]+)\)", r"\1.substring(\1.length()-\2)", expr, flags=re.IGNORECASE)
+        expr = re.sub(r"\bMID\s*\(([^,]+),\s*([^)]+)\)", r"\1.substring(\2-1)", expr, flags=re.IGNORECASE)
+        expr = re.sub(r"\bLEN\s*\(([^)]+)\)", r"\1.length()", expr, flags=re.IGNORECASE)
+        expr = re.sub(r"\bINSTR\s*\(([^,]+),\s*([^)]+)\)", r"\1.indexOf(\2)", expr, flags=re.IGNORECASE)
+        expr = re.sub(r"\bREPLACE\s*\(([^,]+),\s*([^,]+),\s*([^)]+)\)", r"\1.replace(\2, \3)", expr, flags=re.IGNORECASE)
+        # --- Math functions ---
+        expr = re.sub(r"\bSQR\s*\(([^)]+)\)", r"sqrt(\1)", expr, flags=re.IGNORECASE)
+        expr = re.sub(r"\bSIN\s*\(([^)]+)\)", r"sin(\1)", expr, flags=re.IGNORECASE)
+        expr = re.sub(r"\bCOS\s*\(([^)]+)\)", r"cos(\1)", expr, flags=re.IGNORECASE)
+        expr = re.sub(r"\bTAN\s*\(([^)]+)\)", r"tan(\1)", expr, flags=re.IGNORECASE)
+        expr = re.sub(r"\bABS\s*\(([^)]+)\)", r"abs(\1)", expr, flags=re.IGNORECASE)
+        expr = re.sub(r"\bRND\s*\(\)", r"random(0, 32767)", expr, flags=re.IGNORECASE)
+        expr = re.sub(r"\bINT\s*\(([^)]+)\)", r"int(\1)", expr, flags=re.IGNORECASE)
         # Function mappings - do these FIRST before array conversion
         expr = re.sub(r"\bDIGITALREAD\s*\(([^)]+)\)", r"digitalRead(\1)", expr, flags=re.IGNORECASE)
         expr = re.sub(r"\bANALOGREAD\s*\(([^)]+)\)", r"analogRead(\1)", expr, flags=re.IGNORECASE)
