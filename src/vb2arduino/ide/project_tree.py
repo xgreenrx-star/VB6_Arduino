@@ -42,7 +42,7 @@ class ProjectTreeView(QTreeWidget):
         self._parse_code(code_text)
         
         # Create root item for the project
-        root = QTreeWidgetItem(self, ["VB2Arduino Project"])
+        root = QTreeWidgetItem(self, ["Asic (Arduino Basic) Project"])
         font = QFont()
         font.setBold(True)
         root.setFont(0, font)

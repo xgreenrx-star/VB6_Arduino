@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Standalone entry point for VB2Arduino IDE.
+Standalone entry point for Asic (Arduino Basic) IDE.
 Used by PyInstaller to bundle the application.
 """
 

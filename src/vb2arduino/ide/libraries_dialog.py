@@ -156,7 +156,7 @@ class LibrariesDialog(QDialog):
         
     def init_ui(self):
         """Initialize UI."""
-        self.setWindowTitle("Libraries - VB2Arduino")
+        self.setWindowTitle("Libraries - Asic (Arduino Basic)")
         self.setMinimumWidth(700)
         self.setMinimumHeight(500)
         

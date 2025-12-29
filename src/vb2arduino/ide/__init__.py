@@ -1,16 +1,16 @@
-"""VB2Arduino IDE - Arduino-like IDE for VB6-style development."""
+"""Asic (Arduino Basic) IDE - Arduino-like IDE for VB6-style development."""
 
 from PyQt6.QtWidgets import QApplication
 import sys
 
 
 def main():
-    """Entry point for VB2Arduino IDE."""
+    """Entry point for Asic (Arduino Basic) IDE."""
     from vb2arduino.ide.main_window import MainWindow
     
     app = QApplication(sys.argv)
-    app.setApplicationName("VB2Arduino IDE")
-    app.setOrganizationName("VB2Arduino")
+    app.setApplicationName("Asic (Arduino Basic) IDE")
+    app.setOrganizationName("Asic (Arduino Basic)")
     
     window = MainWindow()
     window.show()

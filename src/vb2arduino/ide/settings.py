@@ -1,4 +1,4 @@
-"""Settings management for VB2Arduino IDE."""
+"""Settings management for Asic (Arduino Basic) IDE."""
 
 import json
 import pathlib
@@ -41,7 +41,7 @@ class Settings:
     }
     
     def __init__(self):
-        self.config_dir = pathlib.Path.home() / ".vb2arduino"
+        self.config_dir = pathlib.Path.home() / ".asic"
         self.config_file = self.config_dir / "settings.json"
         self.data = self.load()
         

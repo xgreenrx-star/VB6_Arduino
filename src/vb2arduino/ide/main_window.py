@@ -1,4 +1,4 @@
-"""Main window for VB2Arduino IDE."""
+"""Main window for Asic (Arduino Basic) IDE."""
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
@@ -20,6 +20,7 @@ from vb2arduino.ide.utils import (
     get_platformio_boards,
     auto_detect_board_and_port,
 )
+
 from vb2arduino.ide.settings import Settings
 from vb2arduino.ide.settings_dialog import SettingsDialog
 from vb2arduino.ide.libraries_dialog import LibrariesDialog
@@ -27,6 +28,7 @@ from vb2arduino.ide.manage_libraries_dialog import LibrariesDialog as ManageLibr
 from vb2arduino.ide.pin_configuration_dialog import PinConfigurationDialog
 from vb2arduino.ide.pin_templates import get_template_for_board
 from vb2arduino.ide.project_config import ProjectConfig
+from vb2arduino.ide.programmers_reference_dialog import ProgrammersReferenceDialog
 from vb2arduino import transpile_string
 
 
@@ -39,7 +41,7 @@ class MainWindow(QMainWindow):
         self.project_config = ProjectConfig()  # Load project configuration
         self.current_file = None
         self.is_modified = False
-        self.build_output_dir = pathlib.Path(tempfile.gettempdir()) / "vb2arduino_build"
+        self.build_output_dir = pathlib.Path(tempfile.gettempdir()) / "asic_build"
         self.selected_libraries = []  # Track selected libraries
         
         # Board to platform mapping
@@ -76,7 +78,7 @@ class MainWindow(QMainWindow):
         
     def init_ui(self):
         """Initialize the user interface."""
-        self.setWindowTitle("VB2Arduino IDE")
+        self.setWindowTitle("Asic (Arduino Basic) IDE")
         self.setGeometry(100, 100, 1200, 800)
         
         # Create toolbar
@@ -365,14 +367,22 @@ class MainWindow(QMainWindow):
         
         # Help menu
         help_menu = menubar.addMenu("&Help")
-        
-        about_action = QAction("&About VB2Arduino", self)
+
+        reference_action = QAction("Programmer's &Reference", self)
+        reference_action.triggered.connect(self.show_programmers_reference)
+        help_menu.addAction(reference_action)
+
+        about_action = QAction("&About Asic (Arduino Basic)", self)
         about_action.triggered.connect(self.show_about)
         help_menu.addAction(about_action)
+
+    def show_programmers_reference(self):
+        dialog = ProgrammersReferenceDialog(self)
+        dialog.exec()
         
     def load_template(self):
         """Load default VB template."""
-        template = """' VB2Arduino Sketch
+        template = """' Asic (Arduino Basic) Sketch
 Const LED = 2
 
 Sub Setup()
@@ -719,7 +729,7 @@ End Sub
         
     def update_title(self):
         """Update window title."""
-        title = "VB2Arduino IDE"
+        title = "Asic (Arduino Basic) IDE"
         if self.current_file:
             title += f" - {self.current_file.name}"
         else:
@@ -957,10 +967,10 @@ End Sub
         """Show about dialog."""
         QMessageBox.about(
             self,
-            "About VB2Arduino IDE",
-            "<h2>VB2Arduino IDE</h2>"
+            "About Asic (Arduino Basic) IDE",
+            "<h2>Asic (Arduino Basic) IDE</h2>"
             "<p>Version 0.1.0</p>"
-            "<p>A Visual Basic 6-style IDE for Arduino development.</p>"
+            "<p>An Arduino Basic IDE inspired by Visual Basic 6.</p>"
             "<p>Write VB6-like code that transpiles to Arduino C++.</p>"
             "<p>Licensed under GPL-3.0-or-later</p>"
         )

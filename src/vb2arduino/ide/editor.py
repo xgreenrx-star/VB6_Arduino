@@ -108,16 +108,18 @@ class VBSyntaxHighlighter(QSyntaxHighlighter):
                 self.setFormat(match.capturedStart(), match.capturedLength(), format_style)
 
 
-class LineNumberArea(QPlainTextEdit):
+
+from PyQt6.QtWidgets import QWidget
+
+class LineNumberArea(QWidget):
     """Line number area for code editor."""
-    
     def __init__(self, editor):
-        super().__init__()
+        super().__init__(editor)
         self.code_editor = editor
-        
+
     def sizeHint(self):
         return self.code_editor.line_number_area_width()
-        
+
     def paintEvent(self, event):
         self.code_editor.line_number_area_paint_event(event)
 

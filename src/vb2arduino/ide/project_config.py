@@ -1,4 +1,4 @@
-"""Project configuration management for VB2Arduino IDE."""
+"""Project configuration management for Asic (Arduino Basic) IDE."""
 
 import json
 import pathlib
@@ -8,10 +8,10 @@ from typing import Optional
 class ProjectConfig:
     """Manages project-specific settings like library dependencies."""
     
-    CONFIG_FILENAME = ".vb2arduino.json"
+    CONFIG_FILENAME = ".asic.json"
     
     def __init__(self, project_dir: Optional[pathlib.Path] = None):
-        self.project_dir = project_dir or pathlib.Path.home() / ".vb2arduino"
+        self.project_dir = project_dir or pathlib.Path.home() / ".asic"
         self.config_path = self.project_dir / self.CONFIG_FILENAME
         self.data = self._load_config()
     
