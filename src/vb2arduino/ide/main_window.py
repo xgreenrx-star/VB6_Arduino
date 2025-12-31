@@ -33,8 +33,14 @@ from vb2arduino import transpile_string
 
 
 class MainWindow(QMainWindow):
-    """Main IDE window similar to Arduino IDE."""
-    
+    def get_current_editor(self):
+        """Return the current CodeEditorWidget in the active tab, or None."""
+        if hasattr(self, 'tab_widget') and self.tab_widget.count() > 0:
+            widget = self.tab_widget.currentWidget()
+            # Check if widget is a CodeEditorWidget
+            if isinstance(widget, CodeEditorWidget):
+                return widget.editor
+        return None
     def __init__(self):
         super().__init__()
         self.settings = Settings()
@@ -43,8 +49,6 @@ class MainWindow(QMainWindow):
         self.is_modified = False
         self.build_output_dir = pathlib.Path(tempfile.gettempdir()) / "asic_build"
         self.selected_libraries = []  # Track selected libraries
-        
-        # Board to platform mapping
         self.board_platforms = {
             # ESP32 boards
             "esp32-s3-devkitm-1": "espressif32",
@@ -58,10 +62,6 @@ class MainWindow(QMainWindow):
             "mega2560": "atmelavr",
             "megaatmega2560": "atmelavr",
             "nano": "atmelavr",
-            "nanoatmega328": "atmelavr",
-            "leonardo": "atmelavr",
-            "micro": "atmelavr",
-            "pro16MHzatmega328": "atmelavr",
             # Arduino ARM boards
             "nano_33_iot": "atmelsam",
             "mkr1000": "atmelsam",
@@ -72,71 +72,247 @@ class MainWindow(QMainWindow):
             "pico": "raspberrypi",
             "nanorp2040connect": "raspberrypi",
         }
-        
         self.init_ui()
-        self.update_title()
-        
+
     def init_ui(self):
-        """Initialize the user interface."""
-        self.setWindowTitle("Asic (Arduino Basic) IDE")
-        self.setGeometry(100, 100, 1200, 800)
-        
-        # Create toolbar
+        print("[DEBUG] init_ui called")
+        # Status bar (initialize first)
+        self.status = QStatusBar()
+        self.setStatusBar(self.status)
+        self.status.showMessage("Ready")
+
+        # Create toolbar FIRST so board_combo is available
         self.create_toolbar()
-        
-        # Create central widget with splitter
-        central = QWidget()
+
+        # Set up central widget and layout
+        central = QWidget(self)
+        layout = QVBoxLayout()
+        central.setLayout(layout)
         self.setCentralWidget(central)
-        layout = QVBoxLayout(central)
-        
-        # Vertical splitter for editor area and serial monitor
-        v_splitter = QSplitter(Qt.Orientation.Vertical)
-        
-        # Horizontal splitter for editor and tree view
-        h_splitter = QSplitter(Qt.Orientation.Horizontal)
-        
-        # Code editor with procedure dropdown
-        self.editor_widget = CodeEditorWidget(self.settings)
-        self.editor = self.editor_widget.editor  # Keep reference for backward compatibility
-        self.editor.textChanged.connect(self.on_text_changed)
-        
-        # Timer for updating tree view (debounced)
-        self.tree_update_timer = QTimer()
-        self.tree_update_timer.setSingleShot(True)
-        self.tree_update_timer.timeout.connect(self.update_tree_view)
-        self.editor.textChanged.connect(lambda: self.tree_update_timer.start(500))
-        
-        h_splitter.addWidget(self.editor_widget)
-        
-        # Project tree view
+
+        # Create main splitters
+        self.v_splitter = QSplitter(Qt.Orientation.Vertical)
+        self.h_splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        # Project explorer (tree view)
         self.tree_view = ProjectTreeView()
         self.tree_view.item_clicked.connect(self.goto_line)
-        h_splitter.addWidget(self.tree_view)
-        
-        # Set initial sizes (editor larger than tree)
-        h_splitter.setSizes([700, 250])
-        
-        v_splitter.addWidget(h_splitter)
-        
-        # Serial monitor
+        self.tree_view.file_clicked.connect(self.on_project_file_clicked)
+        self.h_splitter.addWidget(self.tree_view)
+
+        # Editor tabs
+        from PyQt6.QtWidgets import QTabWidget
+        self.tab_widget = QTabWidget()
+        self.tab_widget.setTabsClosable(True)
+        self.tab_widget.tabCloseRequested.connect(self.close_tab)
+        self.tab_widget.currentChanged.connect(self.on_tab_changed)
+        self.h_splitter.addWidget(self.tab_widget)
+
+        # Add horizontal splitter (explorer/editor) to vertical splitter
+        self.v_splitter.addWidget(self.h_splitter)
+
+        # Serial monitor at the bottom
         self.serial_monitor = SerialMonitor()
-        v_splitter.addWidget(self.serial_monitor)
-        
-        # Set initial sizes (editor area larger)
-        v_splitter.setSizes([600, 200])
-        
-        layout.addWidget(v_splitter)
-        
+        self.v_splitter.addWidget(self.serial_monitor)
+
+        # Add main splitter to layout
+        layout.addWidget(self.v_splitter)
+
+        # Set initial sizes for splitters
+        self.setMinimumSize(1000, 700)
+        self.v_splitter.setSizes([600, 200])
+        self.h_splitter.setSizes([220, 780])
+
+        # Show all widgets
+        self.v_splitter.show()
+        self.h_splitter.show()
+        self.tab_widget.show()
+        self.tree_view.show()
+        self.serial_monitor.show()
+
+        # Open initial editor tab
+        self.open_file_in_tab(None, title="Untitled")
+
+        # Populate project explorer
+        self.project_root = None
+        self.populate_explorer()
+
+        # Create menu bar (must be after central widget is set)
+        self.create_menus()
+
+    def on_project_file_clicked(self, file_path):
+        import os
+        from pathlib import Path
+        ext = Path(file_path).suffix.lower()
+        image_exts = {'.png', '.jpg', '.jpeg', '.bmp', '.gif'}
+        sound_exts = {'.wav', '.mp3', '.ogg', '.flac', '.aac'}
+        if ext in image_exts:
+            self.open_external_editor(file_path, kind='image')
+        elif ext in sound_exts:
+            self.open_external_editor(file_path, kind='sound')
+        else:
+            self.open_file_in_tab(file_path)
+
+    def open_external_editor(self, file_path, kind='image'):
+        import subprocess, platform
+        editor = None
+        if kind == 'image':
+            editor = getattr(self.settings, 'image_editor', None)
+        elif kind == 'sound':
+            editor = getattr(self.settings, 'sound_editor', None)
+        if not editor:
+            # Fallback: try xdg-open (Linux), start (Windows), open (macOS)
+            if platform.system() == 'Windows':
+                subprocess.Popen(['start', '', file_path], shell=True)
+            elif platform.system() == 'Darwin':
+                subprocess.Popen(['open', file_path])
+            else:
+                subprocess.Popen(['xdg-open', file_path])
+        else:
+            try:
+                subprocess.Popen([editor, file_path])
+            except Exception as e:
+                QMessageBox.warning(self, f"Open {kind.title()} Editor", f"Failed to open {kind} editor: {e}")
+
+
+
         # Status bar
         self.status = QStatusBar()
         self.setStatusBar(self.status)
         self.status.showMessage("Ready")
-        
+
         # Create menu bar
         self.create_menus()
-        
+
         # Load default template
         self.load_template()
+
+    def populate_explorer(self, root_path=None, parent_item=None, includes=None):
+        """Populate the explorer tree with categorized files and folders, passing includes to highlight."""
+        if root_path is None:
+            if self.project_root:
+                root_path = str(self.project_root)
+            else:
+                root_path = str(pathlib.Path.cwd())
+        self.tree_view.show_project_files(root_path, includes=includes)
+
+    # open_explorer_file removed (no longer needed)
+
+    def open_file_in_tab(self, path, title=None):
+        """Open a file in a new tab, or switch to it if already open."""
+        for i in range(self.tab_widget.count()):
+            tab_path = self.tab_widget.widget(i).property("file_path")
+            if tab_path and path and pathlib.Path(tab_path) == pathlib.Path(path):
+                self.tab_widget.setCurrentIndex(i)
+                self._update_selected_libraries_from_editor(self.tab_widget.widget(i))
+                return
+        includes = []
+        code_for_includes = None
+        if path:
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    code_for_includes = f.read()
+            except Exception:
+                code_for_includes = None
+        if code_for_includes:
+            include_pattern = re.compile(r'^\s*#Include\s+[<"](.+)[>"]', re.IGNORECASE | re.MULTILINE)
+            includes = [m.group(1) for m in include_pattern.finditer(code_for_includes)]
+        editor_widget = CodeEditorWidget(self.settings, includes=includes, include_callback=self._on_include_selected)
+        editor = editor_widget.editor
+        if path and code_for_includes:
+            editor.setPlainText(code_for_includes)
+            editor_widget.setProperty("file_path", str(path))
+            tab_title = title or pathlib.Path(path).name
+        else:
+            tab_title = title or "Untitled"
+        self.tab_widget.addTab(editor_widget, tab_title)
+        self.tab_widget.setCurrentWidget(editor_widget)
+        editor.textChanged.connect(self.on_text_changed)
+        self._update_selected_libraries_from_editor(editor_widget)
+        if path and str(path).endswith((".vb", ".bas")):
+            self.current_file = pathlib.Path(path)
+            self.is_modified = False
+            self.update_title()
+            self.update_tree_view()
+            self.status.showMessage(f"Opened: {path}")
+            self.set_project_root(pathlib.Path(path).parent)
+
+    def on_tab_changed(self, index):
+        widget = self.tab_widget.widget(index)
+        if widget:
+            self._update_selected_libraries_from_editor(widget)
+            file_path = widget.property("file_path")
+            if file_path:
+                self.current_file = pathlib.Path(file_path)
+            else:
+                self.current_file = None
+        self.update_title()
+
+    def _update_selected_libraries_from_editor(self, editor_widget):
+        """Update self.selected_libraries from #Include lines in the given editor widget."""
+        if hasattr(editor_widget, 'editor'):
+            code = editor_widget.editor.toPlainText()
+            include_pattern = re.compile(r'^\s*#Include\s+[<"](.+)[>"]', re.IGNORECASE | re.MULTILINE)
+            self.selected_libraries = [m.group(1) for m in include_pattern.finditer(code)]
+
+    def _on_include_selected(self, include_name):
+        # Try to resolve include path and open in new tab
+        if self.project_root:
+            candidate_paths = [
+                self.project_root / "headers" / include_name,
+                self.project_root / include_name
+            ]
+        else:
+            candidate_paths = [
+                pathlib.Path("headers") / include_name,
+                pathlib.Path(include_name)
+            ]
+        for candidate in candidate_paths:
+            if candidate.exists() and candidate.is_file():
+                self.open_file_in_tab(str(candidate))
+                return
+
+    def close_tab(self, index):
+        widget = self.tab_widget.widget(index)
+        self.tab_widget.removeTab(index)
+        widget.deleteLater()
+        # Optionally update current_file
+        if self.tab_widget.count() > 0:
+            current_widget = self.tab_widget.currentWidget()
+            file_path = current_widget.property("file_path")
+            if file_path:
+                self.current_file = pathlib.Path(file_path)
+            else:
+                self.current_file = None
+        else:
+            self.current_file = None
+        self.update_title()
+
+    def on_tab_changed(self, index):
+        widget = self.tab_widget.widget(index)
+        if widget:
+            file_path = widget.property("file_path")
+            if file_path:
+                self.current_file = pathlib.Path(file_path)
+            else:
+                self.current_file = None
+        self.update_title()
+
+    def set_project_root(self, root_path):
+        """Set the project root for the explorer and refresh it."""
+        self.project_root = pathlib.Path(root_path)
+        # Parse includes from the main file if possible
+        includes = []
+        if self.current_file and self.current_file.exists():
+            try:
+                with open(self.current_file, 'r', encoding='utf-8') as f:
+                    code = f.read()
+                import re
+                include_pattern = re.compile(r'^\s*#Include\s+[<"](.+)[>"]', re.IGNORECASE | re.MULTILINE)
+                includes = [m.group(1) for m in include_pattern.finditer(code)]
+            except Exception:
+                pass
+        self.populate_explorer(str(self.project_root), includes=includes)
         
     def create_toolbar(self):
         """Create toolbar with buttons."""
@@ -259,129 +435,122 @@ class MainWindow(QMainWindow):
         self.auto_select_defaults()
         
     def create_menus(self):
-        """Create menu bar."""
+        """Create menu bar with all options, including View."""
         menubar = self.menuBar()
-        
+
         # File menu
         file_menu = menubar.addMenu("&File")
-        
         new_action = QAction("&New", self)
         new_action.setShortcut("Ctrl+N")
         new_action.triggered.connect(self.new_file)
         file_menu.addAction(new_action)
-        
         open_action = QAction("&Open...", self)
         open_action.setShortcut("Ctrl+O")
         open_action.triggered.connect(self.open_file)
         file_menu.addAction(open_action)
-        
         save_action = QAction("&Save", self)
         save_action.setShortcut("Ctrl+S")
         save_action.triggered.connect(self.save_file)
         file_menu.addAction(save_action)
-        
         save_as_action = QAction("Save &As...", self)
         save_as_action.setShortcut("Ctrl+Shift+S")
         save_as_action.triggered.connect(self.save_file_as)
         file_menu.addAction(save_as_action)
-        
         file_menu.addSeparator()
-        
         quit_action = QAction("&Quit", self)
         quit_action.setShortcut("Ctrl+Q")
         quit_action.triggered.connect(self.close)
         file_menu.addAction(quit_action)
-        
+
+        # View menu (insert after File)
+        view_menu = menubar.addMenu("&View")
+        self.toggle_explorer_action = QAction("Project Explorer", self, checkable=True)
+        self.toggle_explorer_action.setChecked(True)
+        self.toggle_explorer_action.triggered.connect(self.toggle_explorer)
+        view_menu.addAction(self.toggle_explorer_action)
+
         # Edit menu
         edit_menu = menubar.addMenu("&Edit")
-        
         undo_action = QAction("&Undo", self)
         undo_action.setShortcut("Ctrl+Z")
-        undo_action.triggered.connect(self.editor.undo)
+        undo_action.triggered.connect(lambda: self.get_current_editor() and self.get_current_editor().undo())
         edit_menu.addAction(undo_action)
-        
         redo_action = QAction("&Redo", self)
         redo_action.setShortcut("Ctrl+Y")
-        redo_action.triggered.connect(self.editor.redo)
+        redo_action.triggered.connect(lambda: self.get_current_editor() and self.get_current_editor().redo())
         edit_menu.addAction(redo_action)
-        
         edit_menu.addSeparator()
-        
         cut_action = QAction("Cu&t", self)
         cut_action.setShortcut("Ctrl+X")
-        cut_action.triggered.connect(self.editor.cut)
+        cut_action.triggered.connect(lambda: self.get_current_editor() and self.get_current_editor().cut())
         edit_menu.addAction(cut_action)
-        
         copy_action = QAction("&Copy", self)
         copy_action.setShortcut("Ctrl+C")
-        copy_action.triggered.connect(self.editor.copy)
+        copy_action.triggered.connect(lambda: self.get_current_editor() and self.get_current_editor().copy())
         edit_menu.addAction(copy_action)
-        
         paste_action = QAction("&Paste", self)
         paste_action.setShortcut("Ctrl+V")
-        paste_action.triggered.connect(self.editor.paste)
+        paste_action.triggered.connect(lambda: self.get_current_editor() and self.get_current_editor().paste())
         edit_menu.addAction(paste_action)
-        
+
         # Sketch menu
         sketch_menu = menubar.addMenu("&Sketch")
-        
         verify_action = QAction("&Compile", self)
         verify_action.setShortcut("Ctrl+R")
         verify_action.triggered.connect(self.verify_code)
         sketch_menu.addAction(verify_action)
-        
         upload_action = QAction("&Upload", self)
         upload_action.setShortcut("Ctrl+U")
         upload_action.triggered.connect(self.upload_code)
         sketch_menu.addAction(upload_action)
-        
         sketch_menu.addSeparator()
-        
         libraries_action = QAction("Include &Library...", self)
         libraries_action.triggered.connect(self.show_libraries)
         sketch_menu.addAction(libraries_action)
-        
+
         # Tools menu
         tools_menu = menubar.addMenu("&Tools")
-        
         serial_action = QAction("Serial &Monitor", self)
         serial_action.setShortcut("Ctrl+Shift+M")
         serial_action.triggered.connect(lambda: self.serial_monitor.setVisible(not self.serial_monitor.isVisible()))
         tools_menu.addAction(serial_action)
-        
-        libraries_action = QAction("Manage &Libraries...", self)
+        libraries_action = QAction("Manage &Libraries... (Advanced Online Manager Available)", self)
         libraries_action.setShortcut("Ctrl+Shift+L")
         libraries_action.triggered.connect(self.show_libraries_manager)
         tools_menu.addAction(libraries_action)
-        
         pins_action = QAction("Configure &Pins...", self)
         pins_action.setShortcut("Ctrl+Shift+P")
         pins_action.triggered.connect(self.show_pin_configuration)
         tools_menu.addAction(pins_action)
-        
         tools_menu.addSeparator()
-        
         settings_action = QAction("&Settings...", self)
         settings_action.triggered.connect(self.show_settings)
         tools_menu.addAction(settings_action)
-        
+
         # Help menu
         help_menu = menubar.addMenu("&Help")
-
         reference_action = QAction("Programmer's &Reference", self)
         reference_action.triggered.connect(self.show_programmers_reference)
         help_menu.addAction(reference_action)
-
         about_action = QAction("&About Asic (Arduino Basic)", self)
         about_action.triggered.connect(self.show_about)
         help_menu.addAction(about_action)
+
+    def toggle_explorer(self, checked):
+        """Show or hide the project explorer (tree view) window."""
+        self.tree_view.setVisible(checked)
+        # Optionally, adjust splitter sizes for better UX
+        if checked:
+            self.h_splitter.setSizes([220, 700, 250])
+        else:
+            self.h_splitter.setSizes([0, 900, 250])
 
     def show_programmers_reference(self):
         dialog = ProgrammersReferenceDialog(self)
         dialog.exec()
         
     def load_template(self):
-        """Load default VB template."""
+        """Load default VB template into the current editor tab."""
         template = """' Asic (Arduino Basic) Sketch
 Const LED = 2
 
@@ -396,7 +565,9 @@ Sub Loop()
     Delay 1000
 End Sub
 """
-        self.editor_widget.setPlainText(template)
+        editor = self.get_current_editor()
+        if editor:
+            editor.setPlainText(template)
         self.is_modified = False
         self.update_title()
         self.update_tree_view()
@@ -408,26 +579,22 @@ End Sub
             self.load_template()
             
     def open_file(self):
-        """Open existing file."""
+        """Open existing file and update project explorer root."""
         if not self.check_save_changes():
             return
-            
+
         filename, _ = QFileDialog.getOpenFileName(
             self,
             "Open VB File",
             "",
             "VB Files (*.vb);;All Files (*)"
         )
-        
+
         if filename:
             try:
-                with open(filename, 'r', encoding='utf-8') as f:
-                    self.editor_widget.setPlainText(f.read())
-                self.current_file = pathlib.Path(filename)
-                self.is_modified = False
-                self.update_title()
-                self.update_tree_view()
-                self.status.showMessage(f"Opened: {filename}")
+                self.open_file_in_tab(filename)
+                # Set project explorer root to the directory of the opened file
+                self.set_project_root(pathlib.Path(filename).parent)
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to open file:\n{e}")
                 
@@ -708,22 +875,25 @@ End Sub
         
     def update_tree_view(self):
         """Update the project tree view with current code structure."""
-        code = self.editor.toPlainText()
-        self.tree_view.update_from_code(code)
+        editor = self.get_current_editor()
+        if editor:
+            code = editor.toPlainText()
+            self.tree_view.update_from_code(code)
         
     def goto_line(self, line_number):
-        """Navigate to a specific line in the editor."""
-        if line_number > 0:
-            cursor = self.editor.textCursor()
+        """Navigate to a specific line in the current editor."""
+        editor = self.get_current_editor()
+        if editor and line_number > 0:
+            cursor = editor.textCursor()
             cursor.movePosition(cursor.MoveOperation.Start)
             cursor.movePosition(cursor.MoveOperation.Down, cursor.MoveMode.MoveAnchor, line_number - 1)
-            self.editor.setTextCursor(cursor)
-            self.editor.centerCursor()
-            self.editor.setFocus()
+            editor.setTextCursor(cursor)
+            editor.centerCursor()
+            editor.setFocus()
             # Temporary highlight to make the target line obvious
             try:
                 duration = int(self.settings.get("editor", "jump_highlight_duration_ms", 3000))
-                self.editor.highlight_line(line_number, duration)
+                editor.highlight_line(line_number, duration)
             except Exception:
                 pass
         
@@ -985,11 +1155,64 @@ End Sub
     
     def show_libraries_manager(self):
         """Show libraries manager dialog."""
-        # Get currently selected board
         board = self.board_combo.currentData()
-        dialog = ManageLibrariesDialog(self.project_config, selected_board=board, parent=self)
+        # Parse #Include statements from the current editor and normalize names
+        used_libraries = []
+        editor = self.get_current_editor()
+        if editor:
+            code = editor.toPlainText()
+            import re
+            include_pattern = re.compile(r'^\s*#Include\s+[<"](.+)[>"]', re.IGNORECASE | re.MULTILINE)
+            raw_includes = [m.group(1) for m in include_pattern.finditer(code)]
+            # Strip .h/.hpp extensions for matching with catalog
+            def normalize_include(name):
+                if name.lower().endswith('.h'):
+                    return name[:-2]
+                if name.lower().endswith('.hpp'):
+                    return name[:-4]
+                return name
+            used_libraries = [normalize_include(n) for n in raw_includes]
+        dialog = ManageLibrariesDialog(
+            self.project_config,
+            selected_board=board,
+            parent=self,
+            on_libraries_changed=self._on_libraries_changed,
+            used_libraries=used_libraries
+        )
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.status.showMessage("Libraries updated", 2000)
+
+    def _on_libraries_changed(self, libraries):
+        """Update #Include statements in the code when libraries are changed from the dialog."""
+        # Update selected_libraries for consistency
+        self.selected_libraries = list(libraries)
+        # Update #Include statements in the current editor
+        editor = self.get_current_editor()
+        if editor:
+            current_code = editor.toPlainText()
+            lines = current_code.split('\n')
+            # Remove old includes
+            include_lines = [i for i, line in enumerate(lines) if line.strip().upper().startswith('#INCLUDE')]
+            for i in reversed(include_lines):
+                lines.pop(i)
+            # Add new includes at the top
+            new_includes = [f"#Include <{lib}>" for lib in libraries]
+            # Insert after any initial comments
+            insert_pos = 0
+            for i, line in enumerate(lines):
+                if line.strip().startswith("'") or not line.strip():
+                    insert_pos = i + 1
+                else:
+                    break
+            for include in reversed(new_includes):
+                lines.insert(insert_pos, include)
+            # Add blank line after includes if needed
+            if new_includes and lines[insert_pos + len(new_includes)].strip():
+                lines.insert(insert_pos + len(new_includes), "")
+            new_code = '\n'.join(lines)
+            editor.setPlainText(new_code)
+            # Update Project Explorer tree view
+            self.tree_view.update_from_code(new_code)
     
     def show_pin_configuration(self):
         """Show pin configuration dialog."""
@@ -1071,8 +1294,14 @@ End Sub
         self.update_title()
         
     def closeEvent(self, event):
-        """Handle window close event."""
+        """Handle window close event and ensure all resources are cleaned up."""
         if self.check_save_changes():
+            # Ensure serial monitor is closed and cleaned up
+            try:
+                if hasattr(self, 'serial_monitor') and self.serial_monitor is not None:
+                    self.serial_monitor.close()
+            except Exception:
+                pass
             event.accept()
         else:
             event.ignore()

@@ -238,6 +238,9 @@ class SerialMonitor(QWidget):
         
     def closeEvent(self, event):
         """Handle close event."""
-        if self.serial_port and self.serial_port.is_open:
+        # Ensure serial thread is stopped and port is closed
+        try:
             self.disconnect_serial()
+        except Exception:
+            pass
         event.accept()

@@ -11,11 +11,12 @@ def main():
     app = QApplication(sys.argv)
     app.setApplicationName("Asic (Arduino Basic) IDE")
     app.setOrganizationName("Asic (Arduino Basic)")
-    
+    app.setQuitOnLastWindowClosed(True)
+
     window = MainWindow()
     window.show()
-    
-    sys.exit(app.exec())
+
+    app.exec()
 
 
 if __name__ == "__main__":

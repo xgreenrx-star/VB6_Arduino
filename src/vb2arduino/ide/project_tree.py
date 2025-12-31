@@ -7,9 +7,115 @@ import re
 
 
 class ProjectTreeView(QTreeWidget):
+    def show_project_files(self, root_path, includes=None):
+        """Display categorized files and folders in the project directory. Only show include files referenced in the VB source file."""
+        import os
+        from pathlib import Path
+        self.clear()
+        font = QFont()
+        font.setBold(True)
+        root = QTreeWidgetItem(self, ["Project Files"])
+        root.setFont(0, font)
+        root.setExpanded(True)
+
+        # Categories
+        categories = {
+            "Source Files": [".vb", ".bas", ".ino", ".c", ".cpp", ".py"],
+            "Header Files": [".h", ".hpp"],
+            "Images": [".png", ".jpg", ".jpeg", ".bmp", ".gif"],
+            "Other": []
+        }
+        cat_items = {}
+        cat_file_counts = {cat: 0 for cat in categories}
+
+        def categorize(file):
+            ext = file.suffix.lower()
+            for cat, exts in categories.items():
+                if ext in exts:
+                    return cat
+            return "Other"
+
+        # First pass: count files per category
+        def count_files_recursive(parent_path):
+            try:
+                entries = list(Path(parent_path).iterdir())
+            except Exception:
+                entries = []
+            for entry in entries:
+                if entry.is_dir():
+                    count_files_recursive(entry)
+                else:
+                    cat = categorize(entry)
+                    cat_file_counts[cat] += 1
+        count_files_recursive(root_path)
+
+        # Only create category headers if they have files
+        for cat in categories:
+            if cat_file_counts[cat] > 0:
+                cat_items[cat] = QTreeWidgetItem(root, [cat])
+                cat_items[cat].setFont(0, font)
+                cat_items[cat].setExpanded(True)
+
+        # Add Includes category for include files
+        includes_item = QTreeWidgetItem(root, ["Includes"])
+        includes_item.setFont(0, font)
+        includes_item.setExpanded(True)
+
+        # Always show include file names from the VB source file, even if not found on disk
+        if includes:
+            for inc in includes:
+                file_item = QTreeWidgetItem(includes_item, [inc])
+                file_item.setToolTip(0, inc)
+
+        def add_files_recursive(parent_path, parent_item):
+            try:
+                entries = sorted(Path(parent_path).iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+            except Exception:
+                entries = []
+            for entry in entries:
+                if entry.is_dir():
+                    dir_item = QTreeWidgetItem(parent_item, [entry.name + "/"])
+                    dir_item.setFont(0, font)
+                    dir_item.setExpanded(False)
+                    add_files_recursive(entry, dir_item)
+                else:
+                    cat = categorize(entry)
+                    if cat in cat_items:
+                        file_item = QTreeWidgetItem(cat_items[cat], [entry.name])
+                        file_item.setToolTip(0, str(entry))
+
+        add_files_recursive(root_path, root)
+        self.expandAll()
+
+        def categorize(file):
+            ext = file.suffix.lower()
+            for cat, exts in categories.items():
+                if ext in exts:
+                    return cat
+            return "Other"
+
+        def add_files_recursive(parent_path, parent_item):
+            try:
+                entries = sorted(Path(parent_path).iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+            except Exception:
+                entries = []
+            for entry in entries:
+                if entry.is_dir():
+                    dir_item = QTreeWidgetItem(parent_item, [entry.name + "/"])
+                    dir_item.setFont(0, font)
+                    dir_item.setExpanded(False)
+                    add_files_recursive(entry, dir_item)
+                else:
+                    cat = categorize(entry)
+                    file_item = QTreeWidgetItem(cat_items[cat], [entry.name])
+                    file_item.setToolTip(0, str(entry))
+
+        add_files_recursive(root_path, root)
+        self.expandAll()
     """Tree view showing project structure like VB6 Project Explorer."""
     
     item_clicked = pyqtSignal(int)  # Emits line number when item is clicked
+    file_clicked = pyqtSignal(str)  # Emits file path when a file is clicked
     
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -33,6 +139,12 @@ class ProjectTreeView(QTreeWidget):
         line_number = item.data(0, Qt.ItemDataRole.UserRole)
         if line_number is not None:
             self.item_clicked.emit(line_number)
+        # If this is a file (not a category or folder), emit file path
+        parent = item.parent()
+        if parent and parent.parent():  # Only files, not category or root
+            file_path = item.toolTip(0)
+            if file_path:
+                self.file_clicked.emit(file_path)
             
     def update_from_code(self, code_text):
         """Parse code and update tree structure."""

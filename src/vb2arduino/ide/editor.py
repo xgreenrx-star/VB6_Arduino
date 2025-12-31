@@ -545,32 +545,55 @@ class CodeEditor(QPlainTextEdit):
 class CodeEditorWidget(QWidget):
     """Widget combining procedure dropdown and code editor."""
     
-    def __init__(self, settings=None):
+    def __init__(self, settings=None, includes=None, include_callback=None):
         super().__init__()
-        
         self.settings = settings if settings else Settings()
-        
-        # Create layout
+        self.includes = includes or []
+        self.include_callback = include_callback
+        # Layout
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
-        
-        # Create procedure dropdown
+        # Source/Includes dropdown
+        self.view_combo = QComboBox()
+        self.view_combo.addItem("Source")
+        self.view_combo.addItem("Includes")
+        self.view_combo.setMinimumWidth(120)
+        layout.addWidget(self.view_combo)
+        # Widget stack: code editor and includes list
+        from PyQt6.QtWidgets import QStackedWidget, QListWidget
+        self.stack = QStackedWidget()
+        # Code editor
+        self.editor = CodeEditor(self.settings)
+        # Includes list
+        self.includes_list = QListWidget()
+        self.refresh_includes()
+        self.stack.addWidget(self.editor)
+        self.stack.addWidget(self.includes_list)
+        layout.addWidget(self.stack)
+        # Procedure dropdown (for code editor)
         self.procedure_combo = QComboBox()
         self.procedure_combo.addItem("(General)", 0)
         self.procedure_combo.setMinimumWidth(200)
         layout.addWidget(self.procedure_combo)
-        
-        # Create code editor
-        self.editor = CodeEditor(settings)
-        layout.addWidget(self.editor)
-        
-        # Connect editor to combo box
         self.editor.procedure_combo = self.procedure_combo
         self.procedure_combo.currentIndexChanged.connect(self.editor.goto_procedure)
-        
-        # Parse procedures when editor content changes
+        # Connect signals
         self.editor.textChanged.connect(self.on_text_changed)
+        self.view_combo.currentIndexChanged.connect(self._on_view_changed)
+        self.includes_list.itemDoubleClicked.connect(self._on_include_clicked)
+
+    def refresh_includes(self):
+        self.includes_list.clear()
+        for inc in self.includes:
+            self.includes_list.addItem(inc)
+
+    def _on_view_changed(self, idx):
+        self.stack.setCurrentIndex(idx)
+
+    def _on_include_clicked(self, item):
+        if self.include_callback:
+            self.include_callback(item.text())
         
     def on_text_changed(self):
         """Handle text changes in the editor."""
