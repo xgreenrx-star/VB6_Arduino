@@ -1,4 +1,4 @@
-"""Asic (Arduino Basic) IDE - Arduino-like IDE for VB6-style development."""
+"""Asic (Arduino Basic) IDE - Modern Arduino IDE for Basic-like development."""
 
 from PyQt6.QtWidgets import QApplication
 import sys

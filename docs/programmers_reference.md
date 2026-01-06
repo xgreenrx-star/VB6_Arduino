@@ -1,6 +1,14 @@
-# Asic Programmer's Reference
 
-This document lists all Basic-like commands supported by the Asic (Arduino Basic) transpiler, with syntax, description, examples, and related commands.
+# Asic (Arduino Basic) Programmer's Reference
+
+
+This document lists all Basic-like commands supported by the Asic (Arduino Basic) transpiler and IDE, with syntax, description, examples, and related commands.
+
+---
+
+## About Asic (Arduino Basic)
+
+Asic (Arduino Basic) is a modern, VB6-inspired language and IDE for Arduino and ESP32 development. It features a Visual Basic-like syntax, a graphical IDE, and seamless integration with PlatformIO for building and uploading code. Macro commands for keyboard automation and delays are supported in the IDE and transpiler.
 
 ---
 
@@ -405,6 +413,7 @@ Write analog value (PWM).
 AnalogWrite LED, 128
 ```
 
+
 ### `Delay ms`
 Delay in milliseconds.
 
@@ -412,6 +421,24 @@ Delay in milliseconds.
 ```
 Delay 1000
 ```
+
+---
+
+## Macro Commands (Keyboard/Automation)
+
+Asic (Arduino Basic) supports macro commands for keyboard automation, including key presses and delays. Use these in macro strings or automation routines:
+
+- `{{KEY:KEYNAME}}` — Send a keyboard key (e.g., `{{KEY:SPACE}}`, `{{KEY:RIGHT}}`)
+- `{{DELAY:ms}}` — Delay for the specified milliseconds (e.g., `{{DELAY:500}}`)
+
+**Example:**
+```
+{{KEY:SPACE}}{{DELAY:500}}{{KEY:RIGHT}}
+```
+
+This sends a space, waits 500 ms, then sends a right arrow key.
+
+**Note:** Macro commands use double curly braces and a colon, and are case-insensitive. See the IDE's Help menu for a full list of supported keys.
 
 ### `DelayMicroseconds us`
 Delay in microseconds.
@@ -712,13 +739,7 @@ Show free memory (stub).
 
 ---
 
-<!--
-Review notes:
-- All command names, syntax, and examples are up to date with the current Asic (Arduino Basic) transpiler.
-- "VB6_Arduino" has been replaced with "Asic (Arduino Basic)" throughout.
-- All references to "VB6-like" or "VB6_Arduino" are now "Basic-like" or "Asic (Arduino Basic)".
-- The "See Also" section now references the correct Microsoft VBA documentation.
-- All commands listed are supported or stubbed as described in the current transpiler code.
-- No deprecated or outdated usage instructions are present.
-- No errors found in code examples or command descriptions.
--->
+
+---
+
+*This document is up to date with the current Asic (Arduino Basic) IDE and transpiler. All references to VB2Arduino or VB6_Arduino have been replaced. For more details, see the README and User Guide.*

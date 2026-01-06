@@ -1,4 +1,7 @@
-"""Main window for Asic (Arduino Basic) IDE."""
+"""Main window for Asic (Arduino Basic) IDE.
+
+This IDE supports Asic (Arduino Basic) language, macro commands (e.g., {{KEY:...}}, {{DELAY:...}}), and full PlatformIO integration for Arduino/ESP32 development.
+"""
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,

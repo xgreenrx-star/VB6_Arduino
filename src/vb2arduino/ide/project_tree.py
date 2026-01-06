@@ -1,4 +1,4 @@
-"""Project tree view for VB2Arduino IDE."""
+"""Project tree view for Asic (Arduino Basic) IDE."""
 
 from PyQt6.QtWidgets import QTreeWidget, QTreeWidgetItem
 from PyQt6.QtCore import Qt, pyqtSignal
