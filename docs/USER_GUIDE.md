@@ -56,8 +56,15 @@ If `pio` is not on PATH, run as `python -m platformio ...`.
   - File: New/Open/Save/Save As/Quit (unsaved-changes prompt).
   - Edit: Undo/Redo/Cut/Copy/Paste.
   - Sketch: Compile, Upload, Include Library...
-  - Tools: Serial Monitor toggle, Settings.
-  - Help: About.
+  - Tools:
+    - **Serial Monitor** (Ctrl+Shift+M): Toggle serial monitor visibility.
+    - **Manage Libraries** (Ctrl+Shift+L): Browse and install Arduino libraries with board-aware recommendations.
+    - **Configure Pins** (Ctrl+Shift+P): Edit board pin assignments and load/save pin templates.
+    - **Build Flags**: Add/remove custom compiler defines for the selected board.
+    - **Clean Build**: Remove build artifacts from the generated folder (PlatformIO clean).
+    - **Device Monitor**: Open PlatformIO device monitor in a new terminal for real-time serial debugging.
+    - **Settings**: Customize editor colors, behavior, and notification preferences.
+  - Help: Programmer's Reference, About.
 - **Project Tree**: Procedures list for quick navigation.
 - **Serial Monitor**: Connect/disconnect, baud selection, send/receive.
 - **Library Include Helper**: Inserts `#Include <...>` lines at top of the sketch.

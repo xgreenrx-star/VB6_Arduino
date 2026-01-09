@@ -573,6 +573,16 @@ class MainWindow(QMainWindow):
         pins_action.setShortcut("Ctrl+Shift+P")
         pins_action.triggered.connect(self.show_pin_configuration)
         tools_menu.addAction(pins_action)
+        build_flags_action = QAction("&Build Flags...", self)
+        build_flags_action.triggered.connect(self.show_build_flags)
+        tools_menu.addAction(build_flags_action)
+        tools_menu.addSeparator()
+        clean_action = QAction("&Clean Build", self)
+        clean_action.triggered.connect(self.clean_build)
+        tools_menu.addAction(clean_action)
+        device_monitor_action = QAction("Device &Monitor (PlatformIO)", self)
+        device_monitor_action.triggered.connect(self.open_device_monitor)
+        tools_menu.addAction(device_monitor_action)
         tools_menu.addSeparator()
         settings_action = QAction("&Settings...", self)
         settings_action.triggered.connect(self.show_settings)
@@ -1304,6 +1314,138 @@ End Sub
         dialog = PinConfigurationDialog(self.project_config, board_id=board, parent=self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.status.showMessage("Pin configuration updated", 2000)
+    
+    def show_build_flags(self):
+        """Show build flags editor dialog."""
+        board = self.board_combo.currentData()
+        
+        # Get current flags from project config
+        current_flags = self.project_config.get_build_flags(board) or ""
+        
+        # Create a simple dialog for editing build flags
+        from PyQt6.QtWidgets import QTextEdit, QLabel
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Build Flags (Compiler Defines)")
+        dialog.setGeometry(100, 100, 500, 300)
+        
+        layout = QVBoxLayout()
+        
+        label = QLabel("Enter compiler defines (one per line, e.g., -DDEBUG -DVERSION=1):")
+        layout.addWidget(label)
+        
+        text_edit = QTextEdit()
+        text_edit.setPlainText(current_flags)
+        layout.addWidget(text_edit)
+        
+        # Buttons
+        button_layout = QHBoxLayout()
+        ok_btn = QPushButton("OK")
+        cancel_btn = QPushButton("Cancel")
+        reset_btn = QPushButton("Reset to Board Defaults")
+        
+        button_layout.addWidget(reset_btn)
+        button_layout.addStretch()
+        button_layout.addWidget(ok_btn)
+        button_layout.addWidget(cancel_btn)
+        
+        layout.addLayout(button_layout)
+        dialog.setLayout(layout)
+        
+        def save_flags():
+            new_flags = text_edit.toPlainText()
+            self.project_config.set_build_flags(board, new_flags)
+            self.status.showMessage("Build flags updated", 2000)
+            dialog.accept()
+        
+        def reset_flags():
+            # Restore board defaults
+            self.project_config.set_build_flags(board, None)
+            text_edit.setPlainText(self.project_config.get_build_flags(board) or "")
+            self.status.showMessage("Build flags reset to board defaults", 2000)
+        
+        ok_btn.clicked.connect(save_flags)
+        cancel_btn.clicked.connect(dialog.reject)
+        reset_btn.clicked.connect(reset_flags)
+        
+        dialog.exec()
+    
+    def clean_build(self):
+        """Clean build artifacts using PlatformIO."""
+        try:
+            # Save current file first
+            if self.is_modified:
+                self.save_file()
+            
+            board = self.board_combo.currentData()
+            if not board:
+                QMessageBox.warning(self, "Warning", "Please select a board first")
+                return
+            
+            self.status.showMessage("Cleaning build artifacts...")
+            
+            # Run clean in generated directory
+            gen_dir = pathlib.Path.cwd() / "generated"
+            cmd = [
+                sys.executable, "-m", "platformio",
+                "run", "--target", "clean",
+                "--environment", board
+            ]
+            
+            result = subprocess.run(
+                cmd,
+                cwd=str(gen_dir),
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            if result.returncode == 0:
+                self.status.showMessage("✓ Build cleaned successfully", 3000)
+                QMessageBox.information(self, "Success", "Build artifacts cleaned successfully")
+            else:
+                self.status.showMessage("✗ Clean failed", 3000)
+                QMessageBox.warning(self, "Error", f"Clean failed:\n{result.stderr}")
+        except Exception as e:
+            self.status.showMessage("✗ Clean error", 3000)
+            QMessageBox.critical(self, "Error", f"Failed to clean build:\n{e}")
+    
+    def open_device_monitor(self):
+        """Open PlatformIO device monitor."""
+        try:
+            port = self.port_combo.currentText()
+            if not port or port == "No port detected":
+                QMessageBox.warning(self, "Warning", "Please select a serial port first")
+                return
+            
+            board = self.board_combo.currentData()
+            if not board:
+                QMessageBox.warning(self, "Warning", "Please select a board first")
+                return
+            
+            self.status.showMessage("Opening device monitor...")
+            
+            # Open device monitor in a terminal
+            gen_dir = pathlib.Path.cwd() / "generated"
+            cmd = [
+                sys.executable, "-m", "platformio",
+                "device", "monitor",
+                "--port", port,
+                "--baud", "115200"
+            ]
+            
+            # Open in new terminal (works on Linux/Mac/Windows)
+            if sys.platform == "linux":
+                subprocess.Popen(["gnome-terminal", "--", "bash", "-c", " ".join(cmd)])
+            elif sys.platform == "darwin":
+                subprocess.Popen(["open", "-a", "Terminal", " ".join(cmd)])
+            elif sys.platform == "win32":
+                subprocess.Popen(cmd, cwd=str(gen_dir), creationflags=subprocess.CREATE_NEW_CONSOLE)
+            
+            self.status.showMessage("Device monitor opened in terminal", 3000)
+        except Exception as e:
+            self.status.showMessage("✗ Monitor error", 3000)
+            QMessageBox.critical(self, "Error", f"Failed to open device monitor:\n{e}")
     
     def _on_board_changed(self):
         """Handle board selection change - auto-load pin template."""
