@@ -194,7 +194,11 @@ class PinConfigurationDialog(QDialog):
             for pin_name, spin in self.pin_inputs.items():
                 pins[pin_name] = spin.value()
             self.project_config.set_pins(pins)
+            # Also apply any build flags that come with the template so TFT_eSPI picks up pin/driver config
+            if "build_flags" in template:
+                self.project_config.set_build_flags(template.get("build_flags", []))
             self._reload_pins_ui()
+            self._reload_flags_ui()
         else:
             QMessageBox.warning(self, "No Template", 
                               f"No template available for {self.board_id}")

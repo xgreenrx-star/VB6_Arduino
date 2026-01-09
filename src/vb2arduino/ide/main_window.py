@@ -10,6 +10,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QIcon, QAction, QClipboard
+import sys
 import pathlib
 import subprocess
 import tempfile
@@ -190,6 +191,35 @@ class MainWindow(QMainWindow):
         # Load default template
         self.load_template()
 
+    def load_file_on_startup(self, file_path):
+        """Load a file when the application starts (called from command line)."""
+        try:
+            path = pathlib.Path(file_path).resolve()
+            if path.exists() and path.is_file():
+                self.open_file_in_tab(str(path), title=path.name)
+                
+                # Restore board and port selection for this file
+                saved_board = self.project_config.get_board()
+                saved_port = self.project_config.get_port()
+                
+                # Restore board selection
+                if saved_board:
+                    for i in range(self.board_combo.count()):
+                        if self.board_combo.itemData(i) == saved_board:
+                            self.board_combo.setCurrentIndex(i)
+                            break
+                
+                # Restore port selection
+                if saved_port:
+                    for i in range(self.port_combo.count()):
+                        if self.port_combo.itemText(i) == saved_port:
+                            self.port_combo.setCurrentIndex(i)
+                            break
+            else:
+                print(f"Warning: File not found: {file_path}")
+        except Exception as e:
+            print(f"Error loading file: {e}")
+
     def populate_explorer(self, root_path=None, parent_item=None, includes=None):
         """Populate the explorer tree with categorized files and folders, passing includes to highlight."""
         if root_path is None:
@@ -297,6 +327,24 @@ class MainWindow(QMainWindow):
             file_path = widget.property("file_path")
             if file_path:
                 self.current_file = pathlib.Path(file_path)
+                
+                # Restore board and port selection for this file
+                saved_board = self.project_config.get_board()
+                saved_port = self.project_config.get_port()
+                
+                # Restore board selection
+                if saved_board:
+                    for i in range(self.board_combo.count()):
+                        if self.board_combo.itemData(i) == saved_board:
+                            self.board_combo.setCurrentIndex(i)
+                            break
+                
+                # Restore port selection
+                if saved_port:
+                    for i in range(self.port_combo.count()):
+                        if self.port_combo.itemText(i) == saved_port:
+                            self.port_combo.setCurrentIndex(i)
+                            break
             else:
                 self.current_file = None
         self.update_title()
@@ -626,11 +674,21 @@ End Sub
     def _save_to_file(self, path: pathlib.Path):
         """Internal save helper."""
         try:
+            editor = self.get_current_editor()
+            if not editor:
+                return False
             with open(path, 'w', encoding='utf-8') as f:
-                f.write(self.editor.toPlainText())
+                f.write(editor.toPlainText())
             self.current_file = path
             self.is_modified = False
             self.update_title()
+            
+            # Save board and port selection for this file
+            self.project_config.set_board_and_port(
+                self.board_combo.currentData(),
+                self.port_combo.currentText() if self.port_combo.count() > 0 else None
+            )
+            
             self.status.showMessage(f"Saved: {path}")
             return True
         except Exception as e:
@@ -640,6 +698,17 @@ End Sub
     def check_platformio(self):
         """Check if PlatformIO is installed."""
         try:
+            # Try using Python module first (works in venv)
+            result = subprocess.run(
+                [sys.executable, "-m", "platformio", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            if result.returncode == 0:
+                return True
+            
+            # Fallback to 'pio' command in PATH
             result = subprocess.run(
                 ["pio", "--version"],
                 capture_output=True,
@@ -675,7 +744,12 @@ End Sub
         
         try:
             # Transpile VB to C++
-            vb_code = self.editor.toPlainText()
+            editor = self.get_current_editor()
+            if not editor:
+                QMessageBox.warning(self, "No Editor", "No active editor found.")
+                progress.close()
+                return
+            vb_code = editor.toPlainText()
             cpp_code = transpile_string(vb_code)
             
             # Create PlatformIO project structure
@@ -705,7 +779,7 @@ End Sub
             
             # Run PlatformIO compile
             result = subprocess.run(
-                ["pio", "run", "--project-dir", str(self.build_output_dir), "--environment", board],
+                [sys.executable, "-m", "platformio", "run", "--project-dir", str(self.build_output_dir), "--environment", board],
                 capture_output=True,
                 text=True
             )
@@ -780,7 +854,12 @@ End Sub
         
         try:
             # Transpile VB to C++
-            vb_code = self.editor.toPlainText()
+            editor = self.get_current_editor()
+            if not editor:
+                QMessageBox.warning(self, "No Editor", "No active editor found.")
+                progress.close()
+                return
+            vb_code = editor.toPlainText()
             cpp_code = transpile_string(vb_code)
             
             # Create PlatformIO project structure
@@ -810,7 +889,7 @@ End Sub
             
             # Run PlatformIO upload
             result = subprocess.run(
-                ["pio", "run", "--project-dir", str(self.build_output_dir), 
+                [sys.executable, "-m", "platformio", "run", "--project-dir", str(self.build_output_dir), 
                  "--environment", board, "--target", "upload", "--upload-port", port],
                 capture_output=True,
                 text=True
@@ -1153,7 +1232,9 @@ End Sub
         dialog = SettingsDialog(self.settings, self)
         if dialog.exec() == QDialog.DialogCode.Accepted:
             # Apply new settings to editor
-            self.editor.apply_settings(self.settings)
+            editor = self.get_current_editor()
+            if editor:
+                editor.apply_settings(self.settings)
             self.status.showMessage("Settings applied", 2000)
     
     def show_libraries_manager(self):
@@ -1255,7 +1336,11 @@ End Sub
         if not self.selected_libraries:
             return
         
-        current_code = self.editor.toPlainText()
+        editor = self.get_current_editor()
+        if not editor:
+            return
+            
+        current_code = editor.toPlainText()
         lines = current_code.split('\n')
         
         # Find existing #Include lines
@@ -1292,7 +1377,7 @@ End Sub
             lines.insert(insert_pos + len(new_includes), "")
         
         # Update editor
-        self.editor_widget.setPlainText('\n'.join(lines))
+        editor.setPlainText('\n'.join(lines))
         self.is_modified = True
         self.update_title()
         

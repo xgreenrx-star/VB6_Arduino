@@ -21,6 +21,8 @@ class VBTranspiler:
         self.includes: set = set()
         self.current_function: str | None = None
         self.pointer_vars: set[str] = set()
+        self.array_dimensions: dict[str, List[int]] = {}  # Track array dimensions for UBound/LBound
+        self.option_base: int = 0  # Option Base 0 (default) or 1
         self.pointer_default_types = {"BLEServer", "BLEService", "BLECharacteristic", "BLEAdvertising"}
         self.value_default_types = {"Preferences"}
 
@@ -34,6 +36,8 @@ class VBTranspiler:
         self.includes.clear()
         self.current_function = None
         self.pointer_vars.clear()
+        self.array_dimensions.clear()
+        self.option_base = 0
 
         current = None  # None, "setup", "loop", "function"
         label_set = set()
@@ -53,6 +57,14 @@ class VBTranspiler:
                 continue
 
             upper = line.upper()
+            
+            # Option Base support
+            if upper.startswith("OPTION BASE "):
+                try:
+                    self.option_base = int(line.split()[-1])
+                except ValueError:
+                    self.option_base = 0
+                continue
             
             # Include/Import statements
             if upper.startswith("#INCLUDE "):
@@ -172,24 +184,35 @@ class VBTranspiler:
         return name
 
     def _emit_dim(self, line: str) -> str:
-        # Dim x As Integer  | Dim x | Dim arr(10) As String | Dim arr(MAX_SIZE) As String | Dim pServer As BLEServer*
-        # Array syntax: Dim name(size) As Type - size can be number or identifier
-        m_array = re.match(r"DIM\s+(\w+)\s*\((\w+)\)(?:\s+AS\s+([\w\*]+))?", line, re.IGNORECASE)
+        # Dim x As Integer  | Dim x | Dim arr(10) As String | Dim arr(MAX_SIZE) As String
+        # Multi-dimensional arrays: Dim arr(10, 20) As Integer | Dim arr(3, 4, 5) As Integer
+        # Array syntax: Dim name(size1[, size2, ...]) As Type - sizes can be numbers or identifiers
+        m_array = re.match(r"DIM\s+(\w+)\s*\(([^)]+)\)(?:\s+AS\s+([\w\*]+))?", line, re.IGNORECASE)
         if m_array:
-            name, size, type_token = m_array.groups()
+            name, sizes_str, type_token = m_array.groups()
             base_type, is_pointer = self._type_with_pointer(type_token)
             c_type = self._map_type(base_type)
             # Track pointer arrays (rare)
             if is_pointer:
                 self.pointer_vars.add(name)
                 c_type = f"{c_type}*"
-            # Check if size is a number or identifier
-            if size.isdigit():
-                array_size = int(size) + 1  # VB arrays are 0-based but size is max index
-            else:
-                # It's an identifier (constant), use it directly + 1
-                array_size = f"{size} + 1"
-            return f"{c_type} {name}[{array_size}];"
+            # Parse multiple dimensions
+            sizes = [s.strip() for s in sizes_str.split(",")]
+            c_sizes = []
+            dims = []
+            for size in sizes:
+                if size.isdigit():
+                    c_sizes.append(str(int(size) + 1))  # VB arrays are 0-based but size is max index
+                    dims.append(int(size))
+                else:
+                    # It's an identifier (constant), use it directly + 1
+                    c_sizes.append(f"{size} + 1")
+                    dims.append(size)  # Store as string for later reference
+            # Store dimensions for UBound/LBound
+            self.array_dimensions[name] = dims
+            # Build array declaration with brackets for each dimension
+            array_decl = "".join([f"[{size}]" for size in c_sizes])
+            return f"{c_type} {name}{array_decl};"
         
         m = re.match(r"DIM\s+(\w+)(?:\s+AS\s+([\w\*]+))?", line, re.IGNORECASE)
         if not m:
@@ -217,6 +240,8 @@ class VBTranspiler:
         upper = line.upper()
 
         # --- Exit/Continue/Goto support ---
+        if upper == "RETURN":
+            return "return;"
         if upper == "EXIT SUB" or upper == "EXIT FUNCTION":
             return "return;"
         if upper == "EXIT FOR" or upper == "EXIT DO" or upper == "EXIT WHILE" or upper == "EXIT SELECT":
@@ -421,26 +446,113 @@ class VBTranspiler:
                 return self._apply_pointer_access(call_line)
 
         # Method calls: object.method(args) or function calls
-        m_method = re.match(r"([\w:]+(?:(?:\.|->)[\w:]+)*|\w+\([^)]*\))\s*(?:\(([^)]*)\))?", line)
-        # Treat as direct method call only when there's a dot/arrow scope or when the line starts with name(
-        if m_method and "=" not in line and ("." in m_method.group(1) or "->" in m_method.group(1) or "::" in m_method.group(1) or line.startswith(m_method.group(1) + "(")):
-            # Convert method call
-            if m_method.group(2) is not None:
-                args = m_method.group(2).strip()
-                args_expr = ", ".join([self._expr(a.strip()) for a in args.split(",")]) if args else ""
-                call_line = f"{m_method.group(1)}({args_expr});"
+        # Handle nested parentheses properly
+        def extract_method_call(line):
+            """Extract (method_name, args) from method call, handling nested parens."""
+            # Match identifier.method or identifier::method or identifier->method
+            m_start = re.match(r"([\w:]+(?:(?:\.|->|::)[\w:]+)*)\s*\(", line)
+            if not m_start:
+                return None, None
+            
+            method_name = m_start.group(1)
+            start_paren = m_start.end() - 1  # Position of opening paren
+            
+            # Find matching closing paren, handling nesting
+            paren_count = 0
+            i = start_paren
+            while i < len(line):
+                if line[i] == '(':
+                    paren_count += 1
+                elif line[i] == ')':
+                    paren_count -= 1
+                    if paren_count == 0:
+                        args = line[start_paren + 1:i]
+                        return method_name, args
+                i += 1
+            
+            return None, None  # Unclosed parens
+        
+        method_name, args = extract_method_call(line)
+        if method_name and "=" not in line and ("." in method_name or "->" in method_name or "::" in method_name):
+            # This is a method call
+            if args is not None:
+                # Split args by comma, but respect nested parentheses
+                args_list = []
+                current_arg = ""
+                paren_depth = 0
+                for char in args:
+                    if char == '(':
+                        paren_depth += 1
+                        current_arg += char
+                    elif char == ')':
+                        paren_depth -= 1
+                        current_arg += char
+                    elif char == ',' and paren_depth == 0:
+                        if current_arg.strip():
+                            args_list.append(current_arg.strip())
+                        current_arg = ""
+                    else:
+                        current_arg += char
+                if current_arg.strip():
+                    args_list.append(current_arg.strip())
+                
+                args_expr = ", ".join([self._expr(a) for a in args_list]) if args_list else ""
+                call_line = f"{method_name}({args_expr});"
                 return self._apply_pointer_access(call_line)
-            call = self._expr(line)
-            if not call.endswith(";"):
-                call = f"{call};"
-            return self._apply_pointer_access(call)
+            else:
+                call_line = f"{method_name}();"
+                return self._apply_pointer_access(call_line)
+
+        # Standalone function calls: FunctionName(args) or FunctionName()
+        # This handles calls without a . or -> like InitBoard(), DrawBoard(), HandleButtonPress(), etc.
+        if "=" not in line:  # Not an assignment
+            m_standalone_call = re.match(r"(\w+)\s*\(", line)
+            if m_standalone_call:
+                func_name = m_standalone_call.group(1)
+                # Find the matching closing paren
+                start_paren = m_standalone_call.end() - 1
+                paren_count = 0
+                i = start_paren
+                while i < len(line):
+                    if line[i] == '(':
+                        paren_count += 1
+                    elif line[i] == ')':
+                        paren_count -= 1
+                        if paren_count == 0:
+                            args = line[start_paren + 1:i]
+                            # Split args by comma, respecting nested parentheses
+                            args_list = []
+                            current_arg = ""
+                            paren_depth = 0
+                            for char in args:
+                                if char == '(':
+                                    paren_depth += 1
+                                    current_arg += char
+                                elif char == ')':
+                                    paren_depth -= 1
+                                    current_arg += char
+                                elif char == ',' and paren_depth == 0:
+                                    if current_arg.strip():
+                                        args_list.append(current_arg.strip())
+                                    current_arg = ""
+                                else:
+                                    current_arg += char
+                            if current_arg.strip():
+                                args_list.append(current_arg.strip())
+                            
+                            args_expr = ", ".join([self._expr(a) for a in args_list]) if args_list else ""
+                            return f"{func_name}({args_expr});"
+                    i += 1
 
         # Assignments: x = expr
         m_assign = re.match(r"(\w+(?:\s*\[.+?\]|\s*\(.+?\))?)\s*=\s*(.+)", line)
         if m_assign:
             lhs, rhs = m_assign.groups()
-            # Convert VB array syntax arr(i) to C arr[i]
-            lhs = re.sub(r"(\w+)\(([^)]+)\)", r"\1[\2]", lhs)
+            # Convert VB array syntax arr(i,j) to C arr[i][j]
+            def convert_lhs_array(s):
+                # Split by comma inside parens to handle multi-dimensional
+                return re.sub(r"(\w+)\(([^)]+)\)", lambda m: m.group(1) + "".join([f"[{idx.strip()}]" for idx in m.group(2).split(",")]), s)
+            lhs = convert_lhs_array(lhs)
             return f"{lhs} = {self._expr(rhs)};"
         
         # Return statement
@@ -452,6 +564,43 @@ class VBTranspiler:
 
     def _expr(self, expr: str, is_condition: bool = False) -> str:
         expr = expr.strip()
+        # --- UBound/LBound support ---
+        # UBound(arr[, dim]) returns upper bound; LBound(arr[, dim]) returns lower bound
+        # Must handle BEFORE array conversion since UBound/LBound have parentheses
+        def replace_ubound(match):
+            arr_name = match.group(1)
+            dim = match.group(2)  # May be None
+            if arr_name in self.array_dimensions:
+                dims = self.array_dimensions[arr_name]
+                if dim:
+                    try:
+                        dim_idx = int(dim) - 1  # VB is 1-based for dimension numbering
+                        if 0 <= dim_idx < len(dims):
+                            size = dims[dim_idx]
+                            if isinstance(size, int):
+                                return str(size)
+                            else:
+                                return f"({size})"
+                    except ValueError:
+                        pass
+                else:
+                    # No dimension specified, use first (for 1D arrays)
+                    size = dims[0] if dims else 0
+                    if isinstance(size, int):
+                        return str(size)
+                    else:
+                        return f"({size})"
+            return match.group(0)  # Keep original if not found
+        
+        expr = re.sub(r"\bUBOUND\s*\(\s*(\w+)\s*(?:,\s*(\d+)\s*)?\)", replace_ubound, expr, flags=re.IGNORECASE)
+        
+        def replace_lbound(match):
+            arr_name = match.group(1)
+            # LBound always returns option_base (0 or 1)
+            return str(self.option_base)
+        
+        expr = re.sub(r"\bLBOUND\s*\(\s*(\w+)\s*(?:,\s*(\d+)\s*)?\)", replace_lbound, expr, flags=re.IGNORECASE)
+        
         # --- Hex/Oct/Bin literals ---
         expr = re.sub(r"&H([0-9A-Fa-f]+)", lambda m: f"0x{m.group(1)}", expr)
         expr = re.sub(r"&O([0-7]+)", lambda m: f"0{oct(int(m.group(1), 8))[2:]}", expr)
@@ -484,20 +633,26 @@ class VBTranspiler:
         expr = re.sub(r"\bNEW\s+(\w+)\s*\(\)", r"new \1()", expr, flags=re.IGNORECASE)
         expr = re.sub(r"\bNEW\s+(\w+)", r"new \1()", expr, flags=re.IGNORECASE)
         
-        # Convert VB array syntax arr(i) to C arr[i] - but not for function calls
-        # Only convert if it's clearly an array access (variable followed by parens with simple content)
+        # Convert VB array syntax arr(i) or arr(i,j) to C arr[i] or arr[i][j]
+        # Handle multi-dimensional array indexing: arr(i,j,k) -> arr[i][j][k]
         # Skip if it's a known function name
         known_functions = ["digitalRead", "analogRead", "millis", "Serial", "pinMode", "digitalWrite", 
-                          "analogWrite", "delay", "min", "max", "abs", "constrain", "map"]
+                          "analogWrite", "delay", "min", "max", "abs", "constrain", "map", "UBound", "LBound",
+                          "begin", "print", "println", "read", "write", "available", "setup", "loop",
+                          "checkwin", "checkwinhuman", "checkwinai"]  # Add user-defined functions that look like array calls
         def convert_array_access(match):
             name = match.group(1)
+            indices_str = match.group(2)
             # Don't convert if it's a known function or starts with capital (likely a function)
             if name.lower() in [f.lower() for f in known_functions]:
                 return match.group(0)  # Keep as-is
-            # Convert to array syntax
-            return f"{name}[{match.group(2)}]"
+            # Convert to array syntax: split by comma for multi-dimensional arrays
+            indices = [idx.strip() for idx in indices_str.split(",")]
+            brackets = "".join([f"[{idx}]" for idx in indices])
+            return f"{name}{brackets}"
         
-        expr = re.sub(r"(?<!\.)(?<!>)(?<!:)(\b\w+)\(([\w\s+\-*/]+)\)(?!\s*\.)", convert_array_access, expr)
+        # Match arr(...) but NOT after a dot (to exclude method calls like Serial.println)
+        expr = re.sub(r"(?<!\.)(\b[a-z_]\w*)\(([^()]+)\)(?!\s*\()", convert_array_access, expr, flags=re.IGNORECASE)
         
         # Logical replacements
         expr = re.sub(r"\bAND\b", "&&", expr, flags=re.IGNORECASE)

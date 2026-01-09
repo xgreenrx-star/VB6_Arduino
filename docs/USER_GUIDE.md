@@ -152,7 +152,7 @@ vb2arduino input.vb --out generated --board esp32-s3-devkitm-1 --build --upload 
  - **Missing library headers (e.g., `TFT_eSPI.h`)**: Use Tools → Manage Libraries to add `TFT_eSPI`. The IDE writes `lib_deps` for PlatformIO, which automatically fetches libraries at build time.
 
 ## 7. Examples
-See `examples/` for ready-made sketches: `blink.vb`, `button_led.vb`, `serial_echo.vb`, `pwdongle_port.vb`, `lcd_hello.vb`, and demos.
+See `examples/` for ready-made sketches: `blink.vb`, `button_led.vb`, `serial_echo.vb`, `pwdongle_port.vb`, `lcd_hello.vb`, `tictactoe_boot_button.vb`, and demos.
 
 ## 8. Compile Errors & VB Line Mapping
 - When compilation/upload fails, the IDE parses compiler output and shows a clickable list of errors.

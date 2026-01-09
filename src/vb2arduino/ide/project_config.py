@@ -33,6 +33,8 @@ class ProjectConfig:
             "pins": get_default_pins(),  # Default pin configuration
             "build_flags": [],  # Custom build flags/defines
             "templates": {},  # Saved custom templates
+            "board": None,  # Selected board ID
+            "port": None,   # Selected serial port
         }
     
     def save(self):
@@ -165,3 +167,27 @@ class ProjectConfig:
         self.set_pins(t.get("pins", {}))
         self.set_build_flags(t.get("build_flags", []))
         return True
+    # Board and port management
+    def get_board(self) -> Optional[str]:
+        """Get the selected board ID."""
+        return self.data.get("board")
+    
+    def set_board(self, board_id: Optional[str]):
+        """Set the selected board ID."""
+        self.data["board"] = board_id
+        self.save()
+    
+    def get_port(self) -> Optional[str]:
+        """Get the selected serial port."""
+        return self.data.get("port")
+    
+    def set_port(self, port: Optional[str]):
+        """Set the selected serial port."""
+        self.data["port"] = port
+        self.save()
+    
+    def set_board_and_port(self, board_id: Optional[str], port: Optional[str]):
+        """Set both board and port at once."""
+        self.data["board"] = board_id
+        self.data["port"] = port
+        self.save()

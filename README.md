@@ -8,8 +8,9 @@ A VB6-like language transpiler and IDE that converts Visual Basic syntax to Ardu
 - **GUI IDE**: Arduino IDE-style desktop application with code editor and serial monitor
 - **Arduino C++ Output**: Transpiles to clean, readable Arduino C++ code
 - **PlatformIO Integration**: Built-in support for compiling and uploading to microcontrollers
-- **ESP32 Support**: Tested with ESP32-S3 and other Arduino-compatible boards
+- **ESP32 Support**: Tested with ESP32-S3-LCD-1.47 board and compatible with other Arduino boards
 - **CLI and IDE**: Use command-line tools or graphical interface
+- **Array Support**: Multi-dimensional arrays with UBound/LBound functions
 - **Libraries Manager**: Curated catalog with board-aware recommendations; auto-download via PlatformIO
 - **Pin Configuration**: Board templates with auto-load; save/load/delete custom templates per board
 - **Build Flags**: Add custom compiler defines merged with board-required flags
@@ -27,6 +28,9 @@ A VB6-like language transpiler and IDE that converts Visual Basic syntax to Ardu
 - `Const LED = 2` — Constants
 - `Dim x As Integer` — Variable declarations (Integer, Long, Byte, Boolean, Single, String)
 - `Dim x` — Auto-typed as Integer
+- `Dim arr(9) As Integer` — Fixed-size arrays (single dimension)
+- `Dim board(2, 2) As Integer` — Multi-dimensional arrays
+- `UBound(arr)` / `LBound(arr)` — Array bounds functions
 
 ### Control Flow
 - `If...ElseIf...Else...End If`
@@ -232,6 +236,23 @@ vb2arduino examples/button_led.vb --out generated --board esp32-s3-devkitm-1 --b
 vb2arduino examples/serial_echo.vb --out generated --board esp32-s3-devkitm-1 --build --upload
 ```
 
+### TicTacToe (BOOT button, LCD)
+```bash
+vb2arduino examples/tictactoe_boot_button.vb --out generated --board esp32-s3-devkitm-1 --build --upload
+```
+
+### TicTacToe with Arrays (Advanced)
+```bash
+vb2arduino examples/tictactoe_array/tictactoe_array.vb --out generated --board esp32-s3-lcd-1.47 --build --upload
+```
+
+Demonstrates:
+- Multi-dimensional arrays for game board
+- Short press (< 500ms) to move cursor
+- Long press (≥ 500ms) to place X and trigger AI
+- Smart AI with win/block/center/corner strategy
+- Flicker-free rendering with dirty flag
+
 ## Project Structure
 
 ```
@@ -275,7 +296,9 @@ Any board supported by PlatformIO works. Common examples:
 
 See [PlatformIO Boards](https://docs.platformio.org/en/latest/boards/index.html) for full list.
 
-### ESP32-S3 LCD 1.47" (ST7789)
+### ESP32-S3 LCD 1.47" (ST7789) — Primary Testing Board
+
+This is the primary development and testing board for VB2Arduino. The transpiler has been extensively tested on the **ESP32-S3-LCD-1.47** but should work on other Arduino-compatible boards with appropriate pin configuration.
 
 When you select "ESP32-S3-LCD-1.47" in the IDE, default pins and build flags are automatically configured for TFT_eSPI:
 
@@ -298,13 +321,15 @@ This is a **minimal subset** transpiler for Arduino/embedded use:
 - **No dynamic features**: No Variants, Collections, late binding
 - **No GUI**: No forms, controls, or windows (MCU-only)
 - **No error handling**: No `On Error` statements (use return codes)
-- **Fixed arrays only**: Dynamic arrays not yet supported
 - **String handling**: Uses Arduino `String` class (can fragment heap on small MCUs)
 - **Basic type system**: Integer, Long, Byte, Boolean, Single, String
 
+**Implemented Features:**
+- ✓ Fixed-size arrays (single and multi-dimensional)
+- ✓ UBound/LBound array functions
+- ✓ User-defined Sub procedures and Functions
+
 Future enhancements may add:
-- Fixed-size arrays (`Dim arr(10) As Integer`)
-- User-defined functions with parameters
 - `Select Case` statements
 - Modules and code organization
 - More sophisticated error reporting
