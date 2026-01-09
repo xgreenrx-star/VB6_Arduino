@@ -140,7 +140,7 @@ End Sub
 ### 2. Transpile Only
 
 ```bash
-vb2arduino blink.vb --out generated
+vb2arduino examples/blink/blink.vb --out generated
 ```
 
 This creates `generated/main.cpp` with Arduino C++ code.
@@ -148,13 +148,13 @@ This creates `generated/main.cpp` with Arduino C++ code.
 ### 3. Transpile and Build
 
 ```bash
-vb2arduino blink.vb --out generated --board esp32-s3-devkitm-1 --build
+vb2arduino examples/blink/blink.vb --out generated --board esp32-s3-devkitm-1 --build
 ```
 
 ### 4. Transpile, Build, and Upload
 
 ```bash
-vb2arduino blink.vb --out generated --board esp32-s3-devkitm-1 --build --upload --port /dev/ttyUSB0
+vb2arduino examples/blink/blink.vb --out generated --board esp32-s3-devkitm-1 --build --upload --port /dev/ttyUSB0
 ```
 
 ## IDE Features
@@ -219,26 +219,26 @@ Options:
 
 ## Examples
 
-The `examples/` directory contains sample VB programs:
+All examples now live in per-example folders under `examples/`, using the pattern `examples/<name>/<name>.vb`.
 
 ### Blink LED
 ```bash
-vb2arduino examples/blink.vb --out generated --board esp32-s3-devkitm-1 --build --upload
+vb2arduino examples/blink/blink.vb --out generated --board esp32-s3-devkitm-1 --build --upload
 ```
 
 ### Button Input
 ```bash
-vb2arduino examples/button_led.vb --out generated --board esp32-s3-devkitm-1 --build --upload
+vb2arduino examples/button_led/button_led.vb --out generated --board esp32-s3-devkitm-1 --build --upload
 ```
 
 ### Serial Echo
 ```bash
-vb2arduino examples/serial_echo.vb --out generated --board esp32-s3-devkitm-1 --build --upload
+vb2arduino examples/serial_echo/serial_echo.vb --out generated --board esp32-s3-devkitm-1 --build --upload
 ```
 
 ### TicTacToe (BOOT button, LCD)
 ```bash
-vb2arduino examples/tictactoe_boot_button.vb --out generated --board esp32-s3-devkitm-1 --build --upload
+vb2arduino examples/tictactoe_boot_button/tictactoe_boot_button.vb --out generated --board esp32-s3-devkitm-1 --build --upload
 ```
 
 ### TicTacToe with Arrays (Advanced)
@@ -253,6 +253,13 @@ Demonstrates:
 - Smart AI with win/block/center/corner strategy
 - Flicker-free rendering with dirty flag
 
+### Quick headless IDE compile check (no GUI)
+From the repo root with venv active:
+```bash
+PYTHONPATH=$(pwd) QT_QPA_PLATFORM=offscreen .venv/bin/python scripts/verify_ide_compile.py
+```
+Runs `verify_code()` against the blink example and suppresses popups.
+
 ## Project Structure
 
 ```
@@ -263,11 +270,12 @@ vb2arduino/
 │       ├── transpiler.py      # Core transpiler logic
 │       └── cli.py             # Command-line interface
 ├── examples/
-│   ├── blink.vb               # LED blink example
-│   ├── button_led.vb          # Button input example
-│   └── serial_echo.vb         # Serial communication example
-├── tests/
-│   └── test_transpiler.py     # Unit tests
+│   ├── blink/blink.vb
+│   ├── button_led/button_led.vb
+│   ├── serial_echo/serial_echo.vb
+│   └── ... (per-example folders)
+├── scripts/
+│   └── verify_ide_compile.py  # Headless IDE compile smoke test
 ├── pyproject.toml             # Project metadata and dependencies
 ├── README.md                  # This file
 └── LICENSE                    # GPL-3.0-or-later
@@ -320,19 +328,15 @@ This is a **minimal subset** transpiler for Arduino/embedded use:
 
 - **No dynamic features**: No Variants, Collections, late binding
 - **No GUI**: No forms, controls, or windows (MCU-only)
-- **No error handling**: No `On Error` statements (use return codes)
+- **No full VB error handling**: `On Error` statements are stubbed; prefer return codes
 - **String handling**: Uses Arduino `String` class (can fragment heap on small MCUs)
-- **Basic type system**: Integer, Long, Byte, Boolean, Single, String
 
-**Implemented Features:**
-- ✓ Fixed-size arrays (single and multi-dimensional)
-- ✓ UBound/LBound array functions
-- ✓ User-defined Sub procedures and Functions
-
-Future enhancements may add:
-- `Select Case` statements
-- Modules and code organization
-- More sophisticated error reporting
+Implemented highlights:
+- Fixed-size arrays (single/multi-dimensional) with `UBound`/`LBound`
+- `Select Case` with ranges and multiple values
+- Optional/ByRef parameters; `With ... End With`
+- String helpers (`Split`/`Join`/`Filter`, `InStrRev`, `StrComp`, `StrReverse`), conversions (`Val`, `Hex$`, `Oct$`, `Chr$`, `Asc`)
+- Math/time helpers (`Round`, `Fix`, `Sgn`, `Log`, `Exp`, `Atn`, `Timer`, `Randomize`)
 
 ## Development
 

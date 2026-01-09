@@ -159,9 +159,24 @@ vb2arduino input.vb --out generated --board esp32-s3-devkitm-1 --build --upload 
  - **Missing library headers (e.g., `TFT_eSPI.h`)**: Use Tools → Manage Libraries to add `TFT_eSPI`. The IDE writes `lib_deps` for PlatformIO, which automatically fetches libraries at build time.
 
 ## 7. Examples
-See `examples/` for ready-made sketches: `blink.vb`, `button_led.vb`, `serial_echo.vb`, `pwdongle_port.vb`, `lcd_hello.vb`, `tictactoe_boot_button.vb`, and demos.
+Examples are organized as `examples/<name>/<name>.vb`.
 
-## 8. Compile Errors & VB Line Mapping
+- Blink: `examples/blink/blink.vb`
+- Button LED: `examples/button_led/button_led.vb`
+- Serial Echo: `examples/serial_echo/serial_echo.vb`
+- LCD Hello: `examples/lcd_hello/lcd_hello.vb`
+- TicTacToe (BOOT): `examples/tictactoe_boot_button/tictactoe_boot_button.vb`
+- Arrays TicTacToe: `examples/tictactoe_array/tictactoe_array.vb`
+- Split/Join/Filter demo: `examples/split_join_filter_demo/split_join_filter_demo.vb`
+
+## 8. Developer Smoke Tests
+Headless compile check (no GUI), from repo root with venv active:
+```bash
+PYTHONPATH=$(pwd) QT_QPA_PLATFORM=offscreen .venv/bin/python scripts/verify_ide_compile.py
+```
+Runs `verify_code()` against the blink example and suppresses popups.
+
+## 9. Compile Errors & VB Line Mapping
 - When compilation/upload fails, the IDE parses compiler output and shows a clickable list of errors.
 - Each error item maps to the corresponding VB line; double-click an entry to jump to that line.
 - The IDE briefly highlights the target line and shows a status bar hint with a concise error summary.

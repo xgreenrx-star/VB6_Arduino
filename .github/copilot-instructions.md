@@ -68,11 +68,11 @@ source venv/bin/activate
 vb2arduino-ide
 
 # Or use CLI for transpiling only
-vb2arduino examples/blink.vb --out generated
+vb2arduino examples/blink/blink.vb --out generated
 
 # Transpile and build for ESP32
-vb2arduino examples/blink.vb --out generated --board esp32-s3-devkitm-1 --build
+vb2arduino examples/blink/blink.vb --out generated --board esp32-s3-devkitm-1 --build
 
 # Transpile, build, and upload
-vb2arduino examples/blink.vb --out generated --board esp32-s3-devkitm-1 --build --upload --port /dev/ttyUSB0
+vb2arduino examples/blink/blink.vb --out generated --board esp32-s3-devkitm-1 --build --upload --port /dev/ttyUSB0
 ```

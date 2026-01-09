@@ -6,7 +6,7 @@ This IDE supports Asic (Arduino Basic) language, macro commands (e.g., {{KEY:...
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
     QToolBar, QPushButton, QComboBox, QLabel, QMessageBox, QFileDialog,
-    QStatusBar, QDialog, QProgressDialog, QListWidget, QListWidgetItem, QMenu
+    QStatusBar, QDialog, QProgressDialog, QListWidget, QListWidgetItem, QMenu, QTextEdit
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QIcon, QAction, QClipboard
@@ -1317,14 +1317,11 @@ End Sub
     
     def show_build_flags(self):
         """Show build flags editor dialog."""
-        board = self.board_combo.currentData()
-        
         # Get current flags from project config
-        current_flags = self.project_config.get_build_flags(board) or ""
+        current_flags = self.project_config.get_build_flags()
+        current_text = '\n'.join(current_flags)
         
         # Create a simple dialog for editing build flags
-        from PyQt6.QtWidgets import QTextEdit, QLabel
-        
         dialog = QDialog(self)
         dialog.setWindowTitle("Build Flags (Compiler Defines)")
         dialog.setGeometry(100, 100, 500, 300)
@@ -1335,14 +1332,14 @@ End Sub
         layout.addWidget(label)
         
         text_edit = QTextEdit()
-        text_edit.setPlainText(current_flags)
+        text_edit.setPlainText(current_text)
         layout.addWidget(text_edit)
         
         # Buttons
         button_layout = QHBoxLayout()
         ok_btn = QPushButton("OK")
         cancel_btn = QPushButton("Cancel")
-        reset_btn = QPushButton("Reset to Board Defaults")
+        reset_btn = QPushButton("Reset to Empty")
         
         button_layout.addWidget(reset_btn)
         button_layout.addStretch()
@@ -1353,16 +1350,19 @@ End Sub
         dialog.setLayout(layout)
         
         def save_flags():
-            new_flags = text_edit.toPlainText()
-            self.project_config.set_build_flags(board, new_flags)
-            self.status.showMessage("Build flags updated", 2000)
-            dialog.accept()
+            try:
+                flag_text = text_edit.toPlainText()
+                # Split by newlines and filter empty lines
+                new_flags = [f.strip() for f in flag_text.split('\n') if f.strip()]
+                self.project_config.set_build_flags(new_flags)
+                self.status.showMessage(f"Build flags updated ({len(new_flags)} flags)", 2000)
+                dialog.accept()
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Failed to save build flags:\n{e}")
         
         def reset_flags():
-            # Restore board defaults
-            self.project_config.set_build_flags(board, None)
-            text_edit.setPlainText(self.project_config.get_build_flags(board) or "")
-            self.status.showMessage("Build flags reset to board defaults", 2000)
+            text_edit.setPlainText("")
+            self.status.showMessage("Build flags cleared", 2000)
         
         ok_btn.clicked.connect(save_flags)
         cancel_btn.clicked.connect(dialog.reject)
