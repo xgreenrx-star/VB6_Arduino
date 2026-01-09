@@ -1,11 +1,14 @@
 """Code editor with VB syntax highlighting."""
 
-from PyQt6.QtWidgets import QPlainTextEdit, QWidget, QTextEdit, QComboBox, QVBoxLayout, QCompleter
+from PyQt6.QtWidgets import QPlainTextEdit, QWidget, QTextEdit, QComboBox, QVBoxLayout, QCompleter, QTreeView, QHeaderView
 from PyQt6.QtGui import (
     QSyntaxHighlighter, QTextCharFormat, QColor, QFont, 
     QPainter, QTextFormat, QTextCursor, QPalette
 )
-from PyQt6.QtCore import Qt, QRect, QRegularExpression, QTimer, QStringListModel
+from PyQt6.QtCore import Qt, QRect, QRegularExpression, QTimer, QStringListModel, QVariant
+from PyQt6.QtGui import QStandardItemModel, QStandardItem
+from .completion_catalog import get_all_completions
+from .completion_docs import DESCRIPTIONS
 from .settings import Settings
 import re
 
@@ -30,10 +33,23 @@ class VBSyntaxHighlighter(QSyntaxHighlighter):
             keyword_format.setFontWeight(QFont.Weight.Bold)
         
         keywords = [
-            "\\bSub\\b", "\\bEnd\\b", "\\bFunction\\b", "\\bDim\\b", "\\bConst\\b",
-            "\\bAs\\b", "\\bIf\\b", "\\bThen\\b", "\\bElse\\b", "\\bElseIf\\b",
-            "\\bFor\\b", "\\bTo\\b", "\\bNext\\b", "\\bWhile\\b", "\\bWend\\b",
-            "\\bDo\\b", "\\bLoop\\b", "\\bAnd\\b", "\\bOr\\b", "\\bNot\\b",
+            # Blocks & declarations
+            "\\bSub\\b", "\\bEnd\\b", "\\bFunction\\b", "\\bDim\\b", "\\bConst\\b", "\\bStatic\\b",
+            "\\bAs\\b", "\\bOptional\\b", "\\bByRef\\b", "\\bByVal\\b",
+            "\\bType\\b", "\\bEnd\\s+Type\\b",
+            # Control flow
+            "\\bIf\\b", "\\bThen\\b", "\\bElse\\b", "\\bElseIf\\b", "\\bEnd\\s+If\\b",
+            "\\bSelect\\s+Case\\b", "\\bCase\\b", "\\bCase\\s+Else\\b", "\\bEnd\\s+Select\\b",
+            "\\bFor\\b", "\\bTo\\b", "\\bStep\\b", "\\bNext\\b",
+            "\\bWhile\\b", "\\bWend\\b",
+            "\\bDo\\b", "\\bLoop\\b", "\\bLoop\\s+While\\b", "\\bLoop\\s+Until\\b",
+            # Misc
+            "\\bWith\\b", "\\bEnd\\s+With\\b",
+            "\\bAnd\\b", "\\bOr\\b", "\\bNot\\b", "\\bMod\\b",
+            "\\bReturn\\b", "\\bExit\\s+Sub\\b", "\\bExit\\s+Function\\b", "\\bExit\\s+For\\b",
+            "\\bGoto\\b", "^\\s*\\w+:$",
+            "\\bOption\\s+Base\\b",
+            # Types
             "\\bInteger\\b", "\\bLong\\b", "\\bByte\\b", "\\bBoolean\\b",
             "\\bSingle\\b", "\\bDouble\\b", "\\bString\\b"
         ]
@@ -49,11 +65,23 @@ class VBSyntaxHighlighter(QSyntaxHighlighter):
             func_format.setFontWeight(QFont.Weight.Bold)
         
         functions = [
+            # Entry points
             "\\bSetup\\b", "\\bLoop\\b",
+            # Arduino helpers
             "\\bPinMode\\b", "\\bDigitalWrite\\b", "\\bDigitalRead\\b",
-            "\\bAnalogRead\\b", "\\bAnalogWrite\\b", "\\bDelay\\b",
-            "\\bSerialBegin\\b", "\\bSerialPrint\\b", "\\bSerialPrintLine\\b",
-            "\\bSerialAvailable\\b", "\\bSerialRead\\b"
+            "\\bAnalogRead\\b", "\\bAnalogWrite\\b", "\\bDelay\\b", "\\bMillis\\b", "\\bMicros\\b",
+            "\\bSerialBegin\\b", "\\bSerialPrint\\b", "\\bSerialPrintLine\\b", "\\bSerialAvailable\\b", "\\bSerialRead\\b",
+            # String functions
+            "\\bSplit\\b", "\\bJoin\\b", "\\bFilter\\b", "\\bInStrRev\\b", "\\bStrComp\\b", "\\bStrReverse\\b",
+            "\\bVal\\b", "\\bHex\\$\\b", "\\bOct\\$\\b", "\\bChr\\$\\b", "\\bAsc\\b", "\\bSpace\\b", "\\bString\\b",
+            # Math/time
+            "\\bSqr\\b", "\\bRound\\b", "\\bFix\\b", "\\bSgn\\b", "\\bLog\\b", "\\bExp\\b", "\\bAtn\\b",
+            "\\bSin\\b", "\\bCos\\b", "\\bTan\\b", "\\bAbs\\b", "\\bInt\\b", "\\bRnd\\b",
+            "\\bTimer\\b", "\\bRandomize\\b",
+            # Choice helpers
+            "\\bChoose\\b", "\\bSwitch\\b",
+            # Convenience
+            "\\bRGB\\b", "\\bSERVO_DEG2PULSE\\b", "\\bSERVO_CLAMP\\b", "\\bSERVO_CLAMP_DEG2PULSE\\b",
         ]
         
         for func in functions:
@@ -67,8 +95,14 @@ class VBSyntaxHighlighter(QSyntaxHighlighter):
             const_format.setFontWeight(QFont.Weight.Bold)
         
         constants = [
+            # Arduino
             "\\bOUTPUT\\b", "\\bINPUT\\b", "\\bINPUT_PULLUP\\b",
-            "\\bHIGH\\b", "\\bLOW\\b"
+            "\\bHIGH\\b", "\\bLOW\\b",
+            # VB-like
+            "\\bvbCr\\b", "\\bvbLf\\b", "\\bvbCrLf\\b", "\\bvbTab\\b", "\\bvbNullString\\b", "\\bvbNullChar\\b",
+            "\\bvbTrue\\b", "\\bvbFalse\\b",
+            # Math/status
+            "\\bPI\\b", "\\bTAU\\b", "\\bDEG2RAD\\b", "\\bRAD2DEG\\b", "\\bINF\\b", "\\bNAN\\b", "\\bOK\\b", "\\bFAILED\\b",
         ]
         
         for const in constants:
@@ -174,44 +208,52 @@ class CodeEditor(QPlainTextEdit):
         self.highlight_current_line()
         
     def setup_completer(self):
-        """Setup auto-completion."""
-        # Base completion list with VB keywords, Arduino functions, and constants
-        self.base_completions = [
-            # VB Keywords
-            "Sub", "End Sub", "Function", "End Function", "Dim", "Const", "As",
-            "If", "Then", "Else", "ElseIf", "End If",
-            "For", "To", "Step", "Next",
-            "While", "Wend", "Do", "Loop", "Until",
-            "And", "Or", "Not", "Mod",
-            "Return", "Exit Sub", "Exit Function",
-            # Data Types
-            "Integer", "Long", "Byte", "Boolean", "Single", "Double", "String",
-            # Arduino Functions
-            "Setup", "Loop",
-            "PinMode", "DigitalWrite", "DigitalRead",
-            "AnalogRead", "AnalogWrite", "AnalogReference",
-            "Delay", "DelayMicroseconds", "Millis", "Micros",
-            "SerialBegin", "SerialEnd", "SerialAvailable", "SerialRead", 
-            "SerialPrint", "SerialPrintLine", "SerialWrite",
-            "AttachInterrupt", "DetachInterrupt",
-            "Tone", "NoTone", "ShiftOut", "ShiftIn", "PulseIn",
-            "Map", "Constrain", "Min", "Max", "Abs", "Pow", "Sqrt",
-            "Sin", "Cos", "Tan", "Random", "RandomSeed",
-            # Arduino Constants
-            "HIGH", "LOW", "INPUT", "OUTPUT", "INPUT_PULLUP",
-            "LED_BUILTIN", "true", "false",
-            "A0", "A1", "A2", "A3", "A4", "A5",
-        ]
-        
-        # Create completer
-        self.completer = QCompleter(self.base_completions, self)
+        """Setup auto-completion with comprehensive catalog."""
+        # Load comprehensive catalog from completion_catalog
+        self.base_completions = get_all_completions()
+
+        # Create completer with two-column model (command, description)
+        self.completer = QCompleter(self)
         self.completer.setCaseSensitivity(Qt.CaseSensitivity.CaseInsensitive)
+        # Allow matching anywhere to keep suggestions useful while typing
+        try:
+            self.completer.setFilterMode(Qt.MatchFlag.MatchContains)
+        except Exception:
+            pass
         self.completer.setWidget(self)
         self.completer.setCompletionMode(QCompleter.CompletionMode.PopupCompletion)
         self.completer.activated.connect(self.insert_completion)
-        
-        # Model for dynamic updates
-        self.completion_model = QStringListModel(self.base_completions, self.completer)
+        # Build initial model
+        self._build_completion_model(self.base_completions)
+        # Use first column (command) for completion text
+        self.completer.setCompletionColumn(0)
+        # Use a tree view popup to display two columns
+        popup = QTreeView()
+        popup.setRootIsDecorated(False)
+        popup.setItemsExpandable(False)
+        popup.setUniformRowHeights(True)
+        popup.header().setStretchLastSection(True)
+        popup.header().setDefaultSectionSize(220)
+        # Widen columns for readability: names and descriptions
+        # Prefer explicit column widths to avoid platform-specific header issues
+        popup.setColumnWidth(0, 260)
+        popup.setColumnWidth(1, 520)
+        popup.setMinimumWidth(820)
+        self.completer.setPopup(popup)
+
+    def _build_completion_model(self, items_list):
+        """Build a two-column (command, description) model for the completer."""
+        model = QStandardItemModel(0, 2, self)
+        model.setHeaderData(0, Qt.Orientation.Horizontal, "Command")
+        model.setHeaderData(1, Qt.Orientation.Horizontal, "Description")
+        for cmd in items_list:
+            desc = DESCRIPTIONS.get(cmd, "")
+            name_item = QStandardItem(cmd)
+            desc_item = QStandardItem(desc)
+            name_item.setToolTip(desc)
+            desc_item.setToolTip(desc)
+            model.appendRow([name_item, desc_item])
+        self.completion_model = model
         self.completer.setModel(self.completion_model)
         
     def insert_completion(self, completion):
@@ -232,6 +274,24 @@ class CodeEditor(QPlainTextEdit):
         
     def keyPressEvent(self, event):
         """Handle key press events for auto-completion."""
+        # Navigation keys should close the popup and move the cursor, not navigate the popup
+        if event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_Page_Up, Qt.Key.Key_Page_Down, 
+                          Qt.Key.Key_Home, Qt.Key.Key_End):
+            self.completer.popup().hide()
+            super().keyPressEvent(event)
+            return
+        
+        # Ctrl+Space: force popup with entire catalog
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_Space:
+            self.completer.setCompletionPrefix("")
+            # Position popup at cursor
+            cursor_rect = self.cursorRect()
+            cursor_rect.setWidth(
+                self.completer.popup().sizeHintForColumn(0) +
+                self.completer.popup().verticalScrollBar().sizeHint().width()
+            )
+            self.completer.complete(cursor_rect)
+            return
         # If completer is visible and has special keys
         if self.completer.popup().isVisible():
             if event.key() in (Qt.Key.Key_Enter, Qt.Key.Key_Return, Qt.Key.Key_Tab):
@@ -243,11 +303,8 @@ class CodeEditor(QPlainTextEdit):
                 event.accept()
                 return
             elif event.key() in (Qt.Key.Key_Escape, Qt.Key.Key_Backtab):
-                event.ignore()
-                return
-            elif event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down):
-                # Let the completer handle navigation
-                event.ignore()
+                self.completer.popup().hide()
+                event.accept()
                 return
                 
         # Normal key processing
@@ -256,8 +313,8 @@ class CodeEditor(QPlainTextEdit):
         # Trigger completion
         completion_prefix = self.text_under_cursor()
         
-        # Don't show completer for very short text or numbers
-        if len(completion_prefix) < 2 or completion_prefix.isdigit():
+        # Don't show completer for empty text or pure numbers
+        if len(completion_prefix) < 1 or completion_prefix.isdigit():
             self.completer.popup().hide()
             return
             
@@ -329,9 +386,22 @@ class CodeEditor(QPlainTextEdit):
             if var_name not in all_completions:
                 all_completions.append(var_name)
                 
-        # Update model
+        # Update model (preserve popup state and prefix to avoid flicker)
+        was_visible = self.completer.popup().isVisible() if hasattr(self, 'completer') else False
+        current_prefix = self.completer.completionPrefix() if hasattr(self, 'completer') else ""
         all_completions.sort(key=str.lower)
-        self.completion_model.setStringList(all_completions)
+        self._build_completion_model(all_completions)
+        if was_visible:
+            # Restore prefix and popup position after model reset
+            if current_prefix:
+                self.completer.setCompletionPrefix(current_prefix)
+            cursor_rect = self.cursorRect()
+            cursor_rect.setWidth(
+                self.completer.popup().sizeHintForColumn(0) +
+                self.completer.popup().verticalScrollBar().sizeHint().width()
+            )
+            if self.completer.completionCount() > 0:
+                self.completer.complete(cursor_rect)
         
     def parse_procedures(self):
         """Parse the code to find all Sub and Function declarations."""
