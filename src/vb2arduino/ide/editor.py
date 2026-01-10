@@ -1,15 +1,18 @@
 """Code editor with VB syntax highlighting."""
 
-from PyQt6.QtWidgets import QPlainTextEdit, QWidget, QTextEdit, QComboBox, QVBoxLayout, QCompleter, QTreeView, QHeaderView
+from PyQt6.QtWidgets import QPlainTextEdit, QWidget, QTextEdit, QComboBox, QVBoxLayout, QCompleter, QTreeView, QHeaderView, QMenu
 from PyQt6.QtGui import (
     QSyntaxHighlighter, QTextCharFormat, QColor, QFont, 
-    QPainter, QTextFormat, QTextCursor, QPalette
+    QPainter, QTextFormat, QTextCursor, QPalette, QAction
 )
-from PyQt6.QtCore import Qt, QRect, QRegularExpression, QTimer, QStringListModel, QVariant
+from PyQt6.QtCore import Qt, QRect, QRegularExpression, QTimer, QStringListModel, QVariant, pyqtSignal
 from PyQt6.QtGui import QStandardItemModel, QStandardItem
 from .completion_catalog import get_all_completions
 from .completion_docs import DESCRIPTIONS
 from .settings import Settings
+from .hover_tooltip import show_hover_tooltip
+from .auto_indent import AutoIndenter
+from .snippets import SnippetManager
 import re
 
 
@@ -161,12 +164,24 @@ class LineNumberArea(QWidget):
 class CodeEditor(QPlainTextEdit):
     """Code editor with line numbers and syntax highlighting."""
     
+    modified_changed = pyqtSignal(bool)  # Signal for dirty state
+    
     def __init__(self, settings=None):
         super().__init__()
         
         self.settings = settings if settings else Settings()
         self.procedures = []  # List of (name, line_number) tuples
         self.variables = []  # List of variable names
+        self._is_modified = False
+        
+        # Feature helpers
+        self.auto_indenter = AutoIndenter()
+        self.snippet_manager = SnippetManager()
+        self.hover_timer = QTimer()
+        self.hover_timer.setSingleShot(True)
+        self.hover_timer.setInterval(500)  # 500ms delay
+        self.hover_timer.timeout.connect(self._show_hover_tooltip)
+        self.hover_pos = None
         
         # Set font from settings
         font_family = self.settings.get("editor", "font_family", "Courier New")
@@ -193,7 +208,10 @@ class CodeEditor(QPlainTextEdit):
         self.update_timer = QTimer()
         self.update_timer.setSingleShot(True)
         self.update_timer.timeout.connect(self.parse_code)
-        self.textChanged.connect(lambda: self.update_timer.start(500))  # 500ms delay
+        self.textChanged.connect(self._on_text_changed)
+        
+        # Enable mouse tracking for hover tooltips
+        self.setMouseTracking(True)
         
         # Apply colors after line_number_area is created
         self.apply_colors()
@@ -281,6 +299,37 @@ class CodeEditor(QPlainTextEdit):
             super().keyPressEvent(event)
             return
         
+        # Ctrl+/ to toggle comments
+        if event.key() == Qt.Key.Key_Slash and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            self.toggle_comment()
+            return
+        
+        # Ctrl++ or Ctrl+= to increase font size
+        if (event.key() in (Qt.Key.Key_Plus, Qt.Key.Key_Equal)) and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            self.change_font_size(1)
+            return
+        
+        # Ctrl+- to decrease font size
+        if event.key() == Qt.Key.Key_Minus and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            self.change_font_size(-1)
+            return
+        
+        # Ctrl+0 to reset font size
+        if event.key() == Qt.Key.Key_0 and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            self.reset_font_size()
+            return
+        
+        # Tab key: try snippet expansion first
+        if event.key() == Qt.Key.Key_Tab and not self.completer.popup().isVisible():
+            if self.snippet_manager.try_expand_snippet(self):
+                return
+        
+        # Enter key: auto-indent
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if not self.completer.popup().isVisible():
+                self.auto_indenter.handle_return_key(self)
+                return
+        
         # Ctrl+Space: force popup with entire catalog
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier and event.key() == Qt.Key.Key_Space:
             self.completer.setCompletionPrefix("")
@@ -332,6 +381,137 @@ class CodeEditor(QPlainTextEdit):
             self.completer.complete(cursor_rect)
         else:
             self.completer.popup().hide()
+    
+    def mouseMoveEvent(self, event):
+        """Handle mouse move for hover tooltips."""
+        super().mouseMoveEvent(event)
+        self.hover_pos = event.pos()
+        self.hover_timer.start()
+    
+    def _show_hover_tooltip(self):
+        """Show hover tooltip if mouse is over a word."""
+        if self.hover_pos:
+            show_hover_tooltip(self, type('Event', (), {'pos': lambda: self.hover_pos})())
+    
+    def contextMenuEvent(self, event):
+        """Show context menu with custom actions."""
+        menu = self.createStandardContextMenu()
+        menu.addSeparator()
+        
+        # Add custom actions
+        comment_action = QAction("Toggle Comment (Ctrl+/)", self)
+        comment_action.triggered.connect(self.toggle_comment)
+        menu.addAction(comment_action)
+        
+        goto_def_action = QAction("Go to Definition", self)
+        goto_def_action.triggered.connect(self.go_to_definition)
+        menu.addAction(goto_def_action)
+        
+        menu.exec(event.globalPos())
+    
+    def toggle_comment(self):
+        """Toggle comment on selected lines."""
+        cursor = self.textCursor()
+        
+        # Get selection bounds
+        start = cursor.selectionStart()
+        end = cursor.selectionEnd()
+        
+        cursor.setPosition(start)
+        cursor.movePosition(QTextCursor.MoveOperation.StartOfLine)
+        start_line = cursor.blockNumber()
+        
+        cursor.setPosition(end)
+        end_line = cursor.blockNumber()
+        
+        # Process each line
+        cursor.beginEditBlock()
+        
+        for line_num in range(start_line, end_line + 1):
+            cursor.setPosition(self.document().findBlockByNumber(line_num).position())
+            cursor.movePosition(QTextCursor.MoveOperation.StartOfLine)
+            cursor.movePosition(QTextCursor.MoveOperation.EndOfLine, QTextCursor.MoveMode.KeepAnchor)
+            line_text = cursor.selectedText()
+            
+            # Check if line is commented
+            stripped = line_text.lstrip()
+            if stripped.startswith("'"):
+                # Uncomment: remove first '
+                new_text = line_text.replace("'", "", 1)
+            else:
+                # Comment: add ' at start
+                indent = len(line_text) - len(stripped)
+                new_text = line_text[:indent] + "' " + stripped
+            
+            cursor.insertText(new_text)
+        
+        cursor.endEditBlock()
+    
+    def go_to_definition(self):
+        """Jump to definition of word under cursor."""
+        word = self.text_under_cursor()
+        if not word:
+            return
+        
+        # Search in procedures
+        for proc_name, line_num in self.procedures:
+            if word.lower() in proc_name.lower():
+                self.goto_line(line_num)
+                return
+        
+        # Search for Dim/Const declaration
+        text = self.toPlainText()
+        lines = text.split('\n')
+        for i, line in enumerate(lines):
+            if re.search(rf'^\s*(Dim|Const)\s+{re.escape(word)}\b', line, re.IGNORECASE):
+                self.goto_line(i + 1)
+                return
+    
+    def goto_line(self, line_number):
+        """Jump to specified line number."""
+        if line_number <= 0:
+            return
+        cursor = self.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.Start)
+        cursor.movePosition(QTextCursor.MoveOperation.Down, QTextCursor.MoveMode.MoveAnchor, line_number - 1)
+        self.setTextCursor(cursor)
+        self.centerCursor()
+    
+    def change_font_size(self, delta):
+        """Change font size by delta."""
+        current_font = self.font()
+        new_size = max(6, min(72, current_font.pointSize() + delta))
+        current_font.setPointSize(new_size)
+        self.setFont(current_font)
+        self.setTabStopDistance(4 * self.fontMetrics().horizontalAdvance(' '))
+        # Save to settings
+        self.settings.set("editor", "font_size", new_size)
+    
+    def reset_font_size(self):
+        """Reset font size to default."""
+        default_size = 11
+        current_font = self.font()
+        current_font.setPointSize(default_size)
+        self.setFont(current_font)
+        self.setTabStopDistance(4 * self.fontMetrics().horizontalAdvance(' '))
+        self.settings.set("editor", "font_size", default_size)
+    
+    def _on_text_changed(self):
+        """Handle text changes (for dirty state and parsing)."""
+        if not self._is_modified:
+            self._is_modified = True
+            self.modified_changed.emit(True)
+        self.update_timer.start(500)
+    
+    def set_modified(self, modified):
+        """Set the modified state."""
+        if self._is_modified != modified:
+            self._is_modified = modified
+            self.modified_changed.emit(modified)
+    
+    def is_modified(self):
+        """Check if editor content is modified."""
+        return self._is_modified
         
     def parse_code(self):
         """Parse the code to find procedures and variables."""
