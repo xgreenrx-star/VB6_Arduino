@@ -10,7 +10,8 @@ EXAMPLES = [
 
 
 def test_examples_transpile_and_syntax_check(tmp_path):
-    fake = Path('build/fake_arduino')
+    # Prefer committed test stub headers if available
+    fake = Path('tests/fake_arduino') if Path('tests/fake_arduino').exists() else Path('build/fake_arduino')
     assert fake.exists(), 'Fake Arduino headers missing; run tests from repo root'
     for ex in EXAMPLES:
         src = Path(ex).read_text()
