@@ -8,29 +8,41 @@ class TranspileResult:
     cpp: str
 
 
+
 class VBTranspiler:
     """Minimal VB6-like to Arduino C++ transpiler for a safe subset."""
 
+    def _is_var_declared_in_scope(self, var: str) -> bool:
+        # Check if a variable was declared with Dim in the current function/sub
+        # This is a simple heuristic: check if the variable is in pointer_vars or array_dimensions or seen in function_lines
+        # For a more robust solution, track declared variables per function
+        declared = set()
+        for line in self.function_lines:
+            m = re.match(r"\s*(?:[a-zA-Z0-9_]+\s+)+([a-zA-Z0-9_]+)\s*[=;]", line)
+            if m:
+                declared.add(m.group(1))
+        return var in declared or var in self.pointer_vars or var in self.array_dimensions
+
     def __init__(self) -> None:
-        self.global_lines: List[str] = []
-        self.setup_lines: List[str] = []
-        self.loop_lines: List[str] = []
-        self.function_lines: List[str] = []
-        self.function_signatures: List[str] = []  # For forward declarations
-        self.block_stack: List[str] = []
-        self.includes: set = set()
-        self.current_function: str | None = None
-        self.pointer_vars: set[str] = set()
-        self.array_dimensions: dict[str, List[int]] = {}  # Track array dimensions for UBound/LBound
-        self.option_base: int = 0  # Option Base 0 (default) or 1
+        self.global_lines = []
+        self.setup_lines = []
+        self.loop_lines = []
+        self.function_lines = []
+        self.function_signatures = []  # For forward declarations
+        self.block_stack = []
+        self.includes = set()
+        self.current_function = None
+        self.pointer_vars = set()
+        self.array_dimensions = {}  # Track array dimensions for UBound/LBound
+        self.option_base = 0  # Option Base 0 (default) or 1
         self.pointer_default_types = {"BLEServer", "BLEService", "BLECharacteristic", "BLEAdvertising"}
         self.value_default_types = {"Preferences"}
         # Graphics library detection
-        self.graphics_lib: str | None = None  # 'tft_espi', 'adafruit_gfx', 'u8g2', 'lvgl'
-        self.display_object: str = "tft"  # Default display object name
-        self.select_expr: str = ""  # Track current select case expression
-        self.in_case_block: bool = False  # Track if we're inside a case block (for break statements)
-        self.with_object: str | None = None  # Track object in With block
+        self.graphics_lib = None  # 'tft_espi', 'adafruit_gfx', 'u8g2', 'lvgl'
+        self.display_object = "tft"  # Default display object name
+        self.select_expr = ""  # Track current select case expression
+        self.in_case_block = False  # Track if we're inside a case block (for break statements)
+        self.with_object = None  # Track object in With block
 
     def transpile(self, source: str) -> TranspileResult:
         # --- Line continuation: join lines ending with _
@@ -66,71 +78,100 @@ class VBTranspiler:
 
         current = None  # None, "setup", "loop", "function"
         label_set = set()
+        # Per-function variable tracking
+        all_functions = []
+        function_lines_buffer = []
+        function_var_candidates = set()
+        function_dim_vars = set()
+        function_param_vars = set()
+        function_header = None
         # Track VB source line numbers for error mapping
         for vb_line_no, raw in enumerate(source.splitlines(), start=1):
             line = raw.strip()
             if not line or line.startswith("'") or line.upper().startswith("REM"):
-                # Support Rem as comment
                 continue
-            
-            # Strip inline comments (both ' and REM)
-            # Must handle strings that might contain ' or REM
             if "'" in line:
-                # Simple approach: split on ' and take first part if not in string
-                # This is a simplification - proper parsing would track string state
                 comment_pos = line.find("'")
                 line = line[:comment_pos].rstrip()
-            # Handle REM comments
             if re.search(r'\bREM\b', line, re.IGNORECASE):
                 rem_match = re.search(r'\bREM\b', line, re.IGNORECASE)
                 if rem_match:
                     line = line[:rem_match.start()].rstrip()
-            
-            if not line:  # Line was only a comment
+            if not line:
                 continue
-
-            # Label: support (must be at start of line, not indented)
             m_label = re.match(r"^(\w+):$", line)
             if m_label:
                 label_set.add(m_label.group(1))
                 target = self._target_lines(current)
                 target.append(f"{m_label.group(1)}:")
                 continue
-
             upper = line.upper()
-            
-            # Option Base support
             if upper.startswith("OPTION BASE "):
                 try:
                     self.option_base = int(line.split()[-1])
                 except ValueError:
                     self.option_base = 0
                 continue
-            
-            # Include/Import statements
             if upper.startswith("#INCLUDE "):
                 include = line[9:].strip()
                 self.includes.add(include)
-                # Detect graphics library
                 self._detect_graphics_lib(include)
                 continue
-            
             if upper.startswith("CONST "):
-                # Emit a mapping marker to correlate C++ lines back to VB
                 self.global_lines.append(f"// __VB_LINE__:{vb_line_no}")
                 self.global_lines.append(self._emit_const(line))
                 continue
             if upper.startswith("DIM "):
                 target = self._target_lines(current)
                 statement = self._emit_dim(line)
-                # Add newlines to function statements for proper formatting
+                # Robustly extract all variable names from a Dim line
+                dim_line = line[3:].strip()
+                # Split by commas at top level (not inside parentheses)
+                def split_dim_vars(s):
+                    vars = []
+                    depth = 0
+                    current = []
+                    for c in s:
+                        if c == '(': depth += 1
+                        if c == ')': depth -= 1
+                        if c == ',' and depth == 0:
+                            vars.append(''.join(current).strip())
+                            current = []
+                        else:
+                            current.append(c)
+                    if current:
+                        vars.append(''.join(current).strip())
+                    return vars
+                debug_vars = []
+                for var_decl in split_dim_vars(dim_line):
+                    # Extract the first word (variable name) before any space, '(', or '='
+                    var_name = var_decl.strip()
+                    m = re.match(r"(\w+)", var_name)
+                    if m:
+                        function_dim_vars.add(m.group(1))
+                        debug_vars.append(m.group(1))
+                if debug_vars:
+                    # Use logger.debug instead of print to avoid noisy output during normal runs
+                    import logging
+                    logging.getLogger(__name__).debug("Hoisted from Dim: %s", debug_vars)
                 if statement:
-                    if current == "function":
-                        target.append(f"// __VB_LINE__:{vb_line_no}\n")
-                        target.append(statement + "\n")
-                    else:
-                        target.append(f"// __VB_LINE__:{vb_line_no}")
-                        target.append(statement)
+                    # Emit a declaration for EACH variable found in the Dim line
+                    for var_decl in split_dim_vars(dim_line):
+                        stmt_var = self._emit_dim(f"DIM {var_decl}")
+                        if not stmt_var:
+                            continue
+                        if current == "function":
+                            function_lines_buffer.append(f"// __VB_LINE__:{vb_line_no}\n")
+                            function_lines_buffer.append(stmt_var + "\n")
+                        elif current == "setup":
+                            target.append(f"// __VB_LINE__:{vb_line_no}")
+                            target.append(stmt_var)
+                        elif current == "loop":
+                            target.append(f"// __VB_LINE__:{vb_line_no}")
+                            target.append(stmt_var)
+                        else:
+                            self.global_lines.append(f"// __VB_LINE__:{vb_line_no}")
+                            self.global_lines.append(stmt_var)
                 continue
             if upper.startswith("SUB SETUP"):
                 current = "setup"
@@ -139,28 +180,141 @@ class VBTranspiler:
                 current = "loop"
                 continue
             if upper.startswith("SUB ") or upper.startswith("FUNCTION "):
+                # If we were already in a function, close and save it
+                if current == "function" and function_lines_buffer:
+                    # Prepend the header if it's not already present
+                    if function_header and (not function_lines_buffer or not function_lines_buffer[0].strip().startswith((function_header.split()[0] + ' ', 'void '))):
+                        function_lines_buffer.insert(0, function_header)
+                    all_functions.append({
+                        'lines_buffer': function_lines_buffer,
+                        'var_candidates': function_var_candidates,
+                        'dim_vars': function_dim_vars,
+                        'param_vars': function_param_vars,
+                        'header': function_header
+                    })
                 current = "function"
-                self.current_function = self._emit_function_header(line)
+                function_lines_buffer = []
+                function_var_candidates = set()
+                function_dim_vars = set()
+                function_param_vars = set()
+                function_header = self._emit_function_header(line)
+                # Parse parameters
+                m_params = re.match(r"(?:SUB|FUNCTION)\s+\w+\s*\(([^)]*)\)", line, re.IGNORECASE)
+                if m_params:
+                    params = m_params.group(1)
+                    for p in params.split(","):
+                        pname = p.strip().split()[-1] if p.strip() else None
+                        if pname:
+                            function_param_vars.add(pname)
                 continue
             if upper == "END SUB" or upper == "END FUNCTION":
                 if current == "function":
-                    self.function_lines.append("}\n")
-                    self.current_function = None
-                current = None
+                    # Prepend the header if it's not already present
+                    if function_header and (not function_lines_buffer or not function_lines_buffer[0].strip().startswith((function_header.split()[0] + ' ', 'void '))):
+                        function_lines_buffer.insert(0, function_header)
+                    # Save the function before resetting
+                    all_functions.append({
+                        'lines_buffer': function_lines_buffer,
+                        'var_candidates': function_var_candidates,
+                        'dim_vars': function_dim_vars,
+                        'param_vars': function_param_vars,
+                        'header': function_header
+                    })
+                    current = None
                 continue
-
             target = self._target_lines(current)
             statement = self._emit_statement(line)
-            # Add mapping marker and newlines to function statements for proper formatting
-            if statement:
-                if current == "function":
-                    target.append(f"// __VB_LINE__:{vb_line_no}\n")
-                    target.append(statement + "\n")
-                else:
+            # Track assigned variables for hoisting
+            if current == "function":
+                # Find all variable assignments in the line (including multiple per line)
+                assigns = re.findall(r"\b(\w+)\s*=", line)
+                # Find all variable assignments in the line (including multiple per line, and in any context)
+                # This regex finds all variable names on the left of an '=' that are not part of '==' or '>=' or '<=' or '!='
+                assign_matches = re.finditer(r"\b(\w+)\s*=\s*[^=]", line)
+                for m in assign_matches:
+                    v = m.group(1)
+                    function_var_candidates.add(v)
+                if statement:
+                    function_lines_buffer.append(f"// __VB_LINE__:{vb_line_no}\n")
+                    function_lines_buffer.append(statement + "\n")
+            else:
+                if statement:
                     target.append(f"// __VB_LINE__:{vb_line_no}")
                     target.append(statement)
 
+        # After all lines, emit each function only once (the last collected body for each Sub/Function)
+        if all_functions:
+            # Deduplicate by function header (name/signature), keep only the last occurrence
+            seen_headers = set()
+            unique_functions = []
+            for func in reversed(all_functions):
+                lines_buffer = func['lines_buffer']
+                if lines_buffer:
+                    header = lines_buffer[0].strip()
+                    if header not in seen_headers:
+                        unique_functions.append(func)
+                        seen_headers.add(header)
+            # Emit in original order (reverse back)
+            for func in reversed(unique_functions):
+                lines_buffer = func['lines_buffer']
+                if not lines_buffer:
+                    continue
+                header = lines_buffer[0].strip()
+                # Only emit valid function headers
+                if not (header.startswith('void ') or header.endswith(') {')):
+                    continue
+                # Collect only the body lines (skip header and any duplicate headers or unrelated code)
+                body_lines = []
+                for line in lines_buffer[1:]:
+                    # Stop if another function header is encountered (should not happen, but safety)
+                    if line.strip().startswith('void '):
+                        break
+                    # Skip stray braces at the top level
+                    if line.strip() == '{':
+                        continue
+                    body_lines.append(line)
+                # --- Robust variable hoisting ---
+                # Gather all variable names used in the function body
+                var_names = set()
+                var_pattern = re.compile(r'\b([a-zA-Z_][a-zA-Z0-9_]*)\b')
+                for line in body_lines:
+                    # Exclude C++ keywords and function calls
+                    tokens = var_pattern.findall(line)
+                    for token in tokens:
+                        # Skip known keywords and runtime/library types
+                        if token in {'if','for','while','switch','case','break','continue','return','else','void','int','float','double','long','bool','char','String','const','auto','static','public','private','protected','unsigned','signed','true','false','new','delete','sizeof','class','struct','enum','union','goto','do','default','try','catch','throw','this','namespace','using','volatile','register','extern','inline','operator','template','typename','typeid','virtual','override','final','friend','explicit','constexpr','nullptr','static_cast','dynamic_cast','reinterpret_cast','const_cast','and','or','not','xor','bitand','bitor','compl','asm','export','import','module','requires','co_await','co_return','co_yield','noexcept','thread_local','alignas','alignof','concept','decltype','static_assert','char16_t','char32_t','wchar_t','short','signed','unsigned','float_t','double_t','int8_t','int16_t','int32_t','int64_t','uint8_t','uint16_t','uint32_t','uint64_t','size_t','ptrdiff_t','intptr_t','uintptr_t','FILE','fpos_t','clock_t','time_t','va_list','jmp_buf','sig_atomic_t','wint_t','wctype_t','mbstate_t','tm','div_t','ldiv_t','lldiv_t','_Bool','_Complex','_Imaginary','main','setup','loop','String','TFT_eSPI','Serial','tft'}:
+                            continue
+                        # Skip tokens that are used as function/method calls (e.g., cos(...), tft.drawLine(...))
+                        if re.search(rf"{re.escape(token)}\s*\(", line):
+                            continue
+                        # Skip likely-constant tokens (all upper-case with optional underscores)
+                        if token.isupper():
+                            continue
+                        # Skip common math and std functions that may appear as identifiers but are calls
+                        builtin_skip = {'abs','cos','sin','tan','sqrt','pow','min','max','round','floor','ceil','substr','substring','indexOf','toString','println','print'}
+                        if token.lower() in builtin_skip:
+                            continue
+                        # If token appears as an object property (preceded by '.') skip it
+                        if re.search(rf"\.{re.escape(token)}\b", line):
+                            continue
+                        var_names.add(token)
+                # Remove parameters and already hoisted vars
+                param_vars = func.get('param_vars', set())
+                dim_vars = func.get('dim_vars', set())
+                hoisted = set(param_vars) | set(dim_vars)
+                to_hoist = sorted(var_names - hoisted)
+                # Emit the function as a single unit: header, hoisted vars, body, closing brace
+                self.function_lines.append(header + '\n')
+                for v in to_hoist:
+                    self.function_lines.append(f'    float {v} = 0;\n')
+                self.function_lines.extend(body_lines)
+                self.function_lines.append('}\n')
+        # Ensure all open blocks are closed (especially for function/loop)
+        self.current_function = None
+        # Note: Do not append closing braces for setup/loop here — the renderer will wrap
+        # setup/loop with their own function braces to avoid duplicate '}' emissions.
         cpp = self._render_cpp()
+        cpp = cpp.rstrip() + "\n"
         return TranspileResult(cpp=cpp)
 
     def _target_lines(self, current: str | None) -> List[str]:
@@ -261,8 +415,9 @@ class VBTranspiler:
         header = f"{ret_c_type} {name}({params_str}) {{\n"
         signature = f"{ret_c_type} {name}({params_str});"
         self.function_signatures.append(signature)
-        self.function_lines.append(header)
-        return name
+        # Return the header string; do not append it to self.function_lines here.
+        # We'll prepend it to the collected function buffer when emitting functions later.
+        return header
 
     def _emit_dim(self, line: str) -> str:
         # Dim x As Integer  | Dim x | Dim arr(10) As String | Dim arr(MAX_SIZE) As String
@@ -325,6 +480,32 @@ class VBTranspiler:
             return f"{self.with_object}.{method_call};"
         upper = line.upper()
 
+        # --- For loop (patch: avoid redeclaring already-declared variables) ---
+        m_for = re.match(r"FOR\s+(\w+)\s*=\s*([^\s]+)\s+TO\s+([^\s]+)(?:\s+STEP\s+([^\s]+))?", line, re.IGNORECASE)
+        if m_for:
+            var, start, end, step = m_for.groups()
+            step = step or "1"
+            # Check if var is already declared in function scope
+            already_declared = False
+            for l in self.function_lines:
+                if re.match(rf"\s*(int|float|double|long|bool|char|String)\s+{var}\b", l):
+                    already_declared = True
+                    break
+            decl = f"int {var} = {self._expr(start)};" if not already_declared else f"{var} = {self._expr(start)};"
+            cond = f"(({'1' if step.startswith('-') else '1'}) >= 0 ? {var} <= {self._expr(end)} : {var} >= {self._expr(end)})"
+            inc = f"{var} += ({self._expr(step)})"
+            return f"for ({decl} {cond}; {inc}) {{"
+
+        # --- Single-line If ... Then ... [statement] ---
+        m_single_if = re.match(r"IF\s+(.+?)\s+THEN\s+(.+)", line, re.IGNORECASE)
+        if m_single_if:
+            cond = self._expr(m_single_if.group(1), is_condition=True)
+            stmt = self._emit_statement(m_single_if.group(2).strip())
+            # Do NOT push to block_stack for single-line If
+            if stmt and stmt.endswith('{'):
+                return f"if ({cond}) {stmt}"
+            else:
+                return f"if ({cond}) {{ {stmt} }}"
         # --- DoEvents ---
         if upper == "DOEVENTS":
             return "delay(0);"
@@ -384,33 +565,6 @@ class VBTranspiler:
 
         # --- Do Until / Loop Until ---
         m_do_until = re.match(r"DO\s+UNTIL\s+(.+)", line, re.IGNORECASE)
-        if m_do_until:
-            cond = self._expr(m_do_until.group(1), is_condition=True)
-            self.block_stack.append("do")
-            return f"do {{ // until {cond}"
-        m_loop_until = re.match(r"LOOP\s+UNTIL\s+(.+)", line, re.IGNORECASE)
-        if m_loop_until:
-            if self.block_stack and self.block_stack[-1] == "do":
-                self.block_stack.pop()
-            cond = self._expr(m_loop_until.group(1), is_condition=True)
-            return f"}} while (!({cond}));"
-
-        # --- Static variable declaration ---
-        m_static = re.match(r"STATIC\s+(\w+)(?:\s+AS\s+([\w\*]+))?", line, re.IGNORECASE)
-        if m_static:
-            name, type_token = m_static.groups()
-            base_type, is_pointer = self._type_with_pointer(type_token)
-            c_type = self._map_type(base_type)
-            init_value = self._default_init(c_type)
-            if is_pointer:
-                return f"static {c_type}* {name} = nullptr;"
-            return f"static {c_type} {name} = {init_value};"
-
-        # --- Timer/Now/Date/Time ---
-        if upper == "TIMER":
-            return "millis()"
-        if upper == "NOW":
-            return "// TODO: Now not implemented"
         if upper == "DATE":
             return "// TODO: Date not implemented"
         if upper == "TIME":
@@ -494,10 +648,13 @@ class VBTranspiler:
         if upper.startswith("ELSEIF "):
             m = re.match(r"ELSEIF\s+(.+?)\s+THEN", line, re.IGNORECASE)
             cond = self._expr(m.group(1), is_condition=True) if m else "/*cond*/"
+            # Always close previous block before opening new else if
             return f"}} else if ({cond}) {{"
         if upper == "ELSE":
+            # Always close previous block before opening else
             return "} else {"
         if upper in ("END IF", "ENDIF"):
+            # Always close block, even if not in stack
             if self.block_stack and self.block_stack[-1] == "if":
                 self.block_stack.pop()
             return "}"
@@ -510,11 +667,19 @@ class VBTranspiler:
                 start_c = self._expr(start)
                 end_c = self._expr(end)
                 step_c = self._expr(step) if step else "1"
-                return (
-                    f"for (int {var} = {start_c}; "
-                    f"(({step_c}) >= 0 ? {var} <= {end_c} : {var} >= {end_c}); "
-                    f"{var} += ({step_c})) {{"
-                )
+                # Use existing variable if declared, otherwise declare new
+                if self._is_var_declared_in_scope(var):
+                    return (
+                        f"for ({var} = {start_c}; "
+                        f"(({step_c}) >= 0 ? {var} <= {end_c} : {var} >= {end_c}); "
+                        f"{var} += ({step_c})) {{"
+                    )
+                else:
+                    return (
+                        f"for (int {var} = {start_c}; "
+                        f"(({step_c}) >= 0 ? {var} <= {end_c} : {var} >= {end_c}); "
+                        f"{var} += ({step_c})) {{"
+                    )
         if upper.startswith("NEXT"):
             if self.block_stack and self.block_stack[-1] == "for":
                 self.block_stack.pop()
@@ -665,6 +830,13 @@ class VBTranspiler:
             if m:
                 return fn(m)
         
+        # Handle assignments
+        if "=" in line:
+            m_assign = re.match(r"(\w+)\s*=\s*(.+)", line)
+            if m_assign:
+                var, expr = m_assign.groups()
+                return f"{var} = {self._expr(expr)};"
+        
         # Method/function calls without parentheses but with arguments (VB allows Foo arg)
         m_call_no_paren = re.match(r"([\w:]+(?:(?:\.|->)[\w:]+)*)\s+(.+)", line)
         if m_call_no_paren and "=" not in line:
@@ -795,6 +967,8 @@ class VBTranspiler:
         return f"// TODO: {line}"
 
     def _expr(self, expr: str, is_condition: bool = False) -> str:
+        # --- Mod operator (VB6) to % (C++) ---
+        expr = re.sub(r"\bMod\b", "%", expr, flags=re.IGNORECASE)
         expr = expr.strip()
         # --- UBound/LBound support ---
         # UBound(arr[, dim]) returns upper bound; LBound(arr[, dim]) returns lower bound
@@ -1296,14 +1470,17 @@ class VBTranspiler:
             includes_section += "\n".join(f"#include {inc}" for inc in sorted(self.includes)) + "\n\n"
         else:
             includes_section += "\n"
-        
+
         # Forward declarations for all functions
         forward_declarations = ""
         if self.function_signatures:
             forward_declarations = "\n".join(self.function_signatures) + "\n\n"
-        
-        # Runtime helpers for Split/Join/Filter
-        helpers = """
+
+        # Runtime helpers for Split/Join/Filter - include only if used
+        helpers = ""
+        content_to_scan = "\n".join(self.global_lines + self.function_lines + self.setup_lines + self.loop_lines)
+        if '__vb_split' in content_to_scan or '__vb_join' in content_to_scan or '__vb_filter' in content_to_scan:
+            helpers = """
 // Runtime helpers generated by transpiler
 static std::vector<String> __vb_split(const String& input, const String& delim) {
     std::vector<String> parts;
@@ -1336,16 +1513,23 @@ static std::vector<String> __vb_filter(const std::vector<String>& parts, const S
 }
 """
 
-        globals_section = helpers + "\n" + "\n".join(self.global_lines)
+        # --- Inject TFT_eSPI tft; declaration and tft.begin() if using TFT_eSPI ---
+        tft_declaration = ""
+        tft_init = ""
+        if self.graphics_lib == 'tft_espi' or (self.graphics_lib is None and any('TFT_eSPI.h' in inc for inc in self.includes)):
+            tft_declaration = "TFT_eSPI tft;\n"
+            tft_init = "tft.begin();\n    "
+
+        globals_section = helpers + "\n" + tft_declaration + "\n".join(self.global_lines)
         functions_section = "".join(self.function_lines) if self.function_lines else ""
-        
+
         # Add initialization delay at the start of setup for USB/serial init
         setup_lines_list = self.setup_lines if self.setup_lines else []
         if setup_lines_list:
-            setup_section = "delay(1000);\n    " + "\n    ".join(setup_lines_list)
+            setup_section = f"delay(1000);\n    {tft_init}" + "\n    ".join(setup_lines_list)
         else:
-            setup_section = "delay(1000);"
-        
+            setup_section = f"delay(1000);\n    {tft_init}".rstrip()
+
         loop_section = "\n    ".join(self.loop_lines) if self.loop_lines else ""
 
         cpp_body = f"""#include <Arduino.h>
