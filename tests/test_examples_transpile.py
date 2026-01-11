@@ -6,6 +6,7 @@ EXAMPLES = [
     'examples/blink/blink.vb',
     'examples/serial_echo/serial_echo.vb',
     'examples/button_led/button_led.vb',
+    'examples/boing_ball_s3_147/boing_ball_s3_147.vb',
 ]
 
 
