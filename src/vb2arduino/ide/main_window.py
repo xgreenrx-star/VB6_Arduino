@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (
     QToolBar, QPushButton, QComboBox, QLabel, QMessageBox, QFileDialog,
     QStatusBar, QDialog, QProgressDialog, QListWidget, QListWidgetItem, QMenu, QTextEdit
 )
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QIcon, QAction, QClipboard
 import sys
 import pathlib
@@ -13,6 +13,72 @@ import tempfile
 import re
 
 from vb2arduino.ide.pin_diagram_overlay import PinDiagramOverlay
+
+
+class ClickableLabel(QLabel):
+    """A QLabel that emits a clicked() signal on mouse release and can flash."""
+    clicked = pyqtSignal()
+
+    def mouseReleaseEvent(self, event):
+        try:
+            self.clicked.emit()
+        except Exception:
+            pass
+        super().mouseReleaseEvent(event)
+
+    def flash(self, color: str = "#FFD54F", duration_ms: int = 200):
+        """Animate opacity briefly for a click effect using QGraphicsOpacityEffect.
+
+        Animates opacity from 1.0 -> 0.4 -> 1.0 over the duration and restores the previous
+        graphics effect (if any).
+        """
+        try:
+            from PyQt6.QtCore import QTimer, QPropertyAnimation, QEasingCurve
+            from PyQt6.QtWidgets import QGraphicsOpacityEffect
+            # Save existing effect
+            prev_effect = self.graphicsEffect()
+            # Apply opacity effect
+            effect = QGraphicsOpacityEffect(self)
+            self.setGraphicsEffect(effect)
+            # Animation: fade to 0.4 then back to 1.0
+            anim = QPropertyAnimation(effect, b"opacity", self)
+            anim.setDuration(max(40, int(duration_ms)))
+            # Use smoother cubic easing for a nicer feel
+            anim.setEasingCurve(QEasingCurve.Type.InOutCubic)
+            # Key values: 0.0 -> middle -> end
+            anim.setKeyValueAt(0.0, 1.0)
+            anim.setKeyValueAt(0.5, 0.4)
+            anim.setKeyValueAt(1.0, 1.0)
+            # Start animation
+            anim.start()
+            # Restore previous effect after animation completes
+            def _restore():
+                try:
+                    # stop and delete animation
+                    try:
+                        anim.stop()
+                    except Exception:
+                        pass
+                    self.setGraphicsEffect(prev_effect)
+                except Exception:
+                    self.setGraphicsEffect(None)
+            # Schedule restore after duration + small buffer
+            QTimer.singleShot(max(40, int(duration_ms)) + 20, _restore)
+        except Exception:
+            # fallback: revert to style flash if animation not available
+            try:
+                prev = self.styleSheet() or ""
+                self.setStyleSheet(f"background-color: {color}; padding: 2px;")
+                from PyQt6.QtCore import QTimer
+                def _restore2():
+                    try:
+                        self.setStyleSheet(prev)
+                    except Exception:
+                        self.setStyleSheet("")
+                QTimer.singleShot(max(10, int(duration_ms)), _restore2)
+            except Exception:
+                pass
+
 from vb2arduino.ide.editor import CodeEditorWidget
 from vb2arduino.ide.serial_monitor import SerialMonitor
 from vb2arduino.ide.serial_plotter import SerialPlotter
@@ -172,13 +238,23 @@ class MainWindow(QMainWindow):
         self.status_encoding = QLabel("UTF-8")
         self.status_board = QLabel("")
         self.status_port = QLabel("")
+        # Problems status indicator (shows "Problem X/Y")
+        self.status_problems = ClickableLabel("")
+        self.status_problems.setToolTip("Click to open Problems")
+        # Accessibility metadata
+        self.status_problems.setAccessibleName("Problems Status")
+        self.status_problems.setAccessibleDescription("Shows the current problem index and count; click to open Problems panel")
+        # Connection to toggle will be bound after menus are created (toggle_problems_action exists then)
         self.status.addPermanentWidget(self.status_linecol)
         self.status.addPermanentWidget(self.status_encoding)
         self.status.addPermanentWidget(self.status_board)
         self.status.addPermanentWidget(self.status_port)
+        self.status.addPermanentWidget(self.status_problems)
 
         # Create toolbar FIRST so board_combo is available
         self.create_toolbar()
+        # Create Problems panel (hidden by default)
+        self.create_problems_panel()
 
         # Set up central widget and layout
         central = QWidget(self)
@@ -239,6 +315,11 @@ class MainWindow(QMainWindow):
         # Create menu bar (must be after central widget is set)
         self.create_menus()
 
+        # Apply high-contrast theme if configured
+        try:
+            self.apply_high_contrast(self.settings.get("editor", "high_contrast", False))
+        except Exception:
+            pass
     def on_project_file_clicked(self, file_path):
         import os
         from pathlib import Path
@@ -474,6 +555,9 @@ class MainWindow(QMainWindow):
         self.verify_btn.setToolTip("Compile (Ctrl+R)")
         self.verify_btn.setMaximumWidth(110)
         self.verify_btn.clicked.connect(self.verify_code)
+        # Accessibility
+        self.verify_btn.setAccessibleName("Compile Button")
+        self.verify_btn.setAccessibleDescription("Compiles the current sketch (Ctrl+R)")
         toolbar.addWidget(self.verify_btn)
         
         # Upload button  
@@ -481,6 +565,9 @@ class MainWindow(QMainWindow):
         self.upload_btn.setToolTip("Compile and Upload (Ctrl+U)")
         self.upload_btn.setMaximumWidth(110)
         self.upload_btn.clicked.connect(self.upload_code)
+        # Accessibility
+        self.upload_btn.setAccessibleName("Upload Button")
+        self.upload_btn.setAccessibleDescription("Uploads the compiled sketch to the selected board (Ctrl+U)")
         toolbar.addWidget(self.upload_btn)
         
         toolbar.addSeparator()
@@ -488,6 +575,9 @@ class MainWindow(QMainWindow):
         # Board selection
         toolbar.addWidget(QLabel("Board: "))
         self.board_combo = QComboBox()
+        # Accessibility
+        self.board_combo.setAccessibleName("Board Selector")
+        self.board_combo.setAccessibleDescription("Select the target board for building and uploading")
         
         # Organize boards by category
         boards = [
@@ -551,6 +641,9 @@ class MainWindow(QMainWindow):
         self.refresh_ports()
         self.port_combo.setMinimumWidth(100)
         self.port_combo.setMaximumWidth(160)
+        # Accessibility
+        self.port_combo.setAccessibleName("Port Selector")
+        self.port_combo.setAccessibleDescription("Select the serial port for upload and monitoring")
         toolbar.addWidget(self.port_combo)
         # Clear [Auto] badge when user changes selection and update serial monitor
         self.port_combo.currentIndexChanged.connect(self._clear_port_auto_mark)
@@ -679,9 +772,32 @@ class MainWindow(QMainWindow):
         self.toggle_explorer_action.setChecked(True)
         self.toggle_explorer_action.triggered.connect(self.toggle_explorer)
         view_menu.addAction(self.toggle_explorer_action)
+        # Problems panel toggle
+        self.toggle_problems_action = QAction("Problems", self, checkable=True)
+        self.toggle_problems_action.setShortcut("Ctrl+Shift+I")
+        self.toggle_problems_action.setChecked(False)
+        self.toggle_problems_action.triggered.connect(self.toggle_problems)
+        view_menu.addAction(self.toggle_problems_action)
+        # Bind clickable status label to toggle via the action (ensures checked state is updated)
+        try:
+            self.status_problems.clicked.connect(lambda: self.toggle_problems_action.trigger())
+            # Also flash the label when clicked for a visual cue
+            self.status_problems.clicked.connect(lambda: self.status_problems.flash())
+        except Exception:
+            pass
 
         # Edit menu
         edit_menu = menubar.addMenu("&Edit")
+        # Go menu for navigation commands
+        go_menu = menubar.addMenu("&Go")
+        goto_def_action = QAction("Go to Definition", self)
+        goto_def_action.setShortcut("F12")
+        goto_def_action.triggered.connect(self.go_to_definition)
+        go_menu.addAction(goto_def_action)
+        find_refs_action = QAction("Find References", self)
+        find_refs_action.setShortcut("Shift+F12")
+        find_refs_action.triggered.connect(self.find_references)
+        go_menu.addAction(find_refs_action)
         undo_action = QAction("&Undo", self)
         undo_action.setShortcut("Ctrl+Z")
         undo_action.triggered.connect(lambda: self.get_current_editor() and self.get_current_editor().undo())
@@ -739,12 +855,21 @@ class MainWindow(QMainWindow):
 
         # Tools menu
         tools_menu = menubar.addMenu("&Tools")
+        run_linter_action = QAction("Run Linter", self)
+        run_linter_action.setShortcut("Ctrl+L")
+        run_linter_action.triggered.connect(self.run_linter)
+        tools_menu.addAction(run_linter_action)
+        # Quick Fix: apply to the currently selected problem (if available)
+        self.apply_quick_fix_action = QAction("Apply Quick Fix", self)
+        self.apply_quick_fix_action.setShortcut("Ctrl+.")
+        self.apply_quick_fix_action.triggered.connect(self.apply_quick_fix_for_current_problem)
+        tools_menu.addAction(self.apply_quick_fix_action)
         # Pin Diagram Overlay
         pin_diagram_action = QAction("Show Pin Diagram", self)
         pin_diagram_action.setShortcut("Ctrl+Alt+P")
         pin_diagram_action.triggered.connect(self.show_pin_diagram_overlay)
         tools_menu.addAction(pin_diagram_action)
-
+        # Serial monitor/plotter actions
         serial_action = QAction("Serial &Monitor", self)
         serial_action.setShortcut("Ctrl+Shift+M")
         serial_action.triggered.connect(lambda: self.serial_monitor.setVisible(not self.serial_monitor.isVisible()))
@@ -753,34 +878,15 @@ class MainWindow(QMainWindow):
         plotter_action.setShortcut("Ctrl+Shift+P")
         plotter_action.triggered.connect(self.show_serial_plotter)
         tools_menu.addAction(plotter_action)
-        libraries_action = QAction("Manage &Libraries... (Advanced Online Manager Available)", self)
-        libraries_action.setShortcut("Ctrl+Shift+L")
-        libraries_action.triggered.connect(self.show_libraries_manager)
-        tools_menu.addAction(libraries_action)
-        pins_action = QAction("Configure &Pins...", self)
-        # Shortcuts help
-        shortcuts_action = QAction("Keyboard Shortcuts...", self)
-        shortcuts_action.setShortcut("Ctrl+Q")
-        shortcuts_action.triggered.connect(self.show_shortcuts_help)
-        tools_menu.addAction(shortcuts_action)
-        pins_action.setShortcut("Ctrl+Shift+P")
-        pins_action.triggered.connect(self.show_pin_configuration)
-        tools_menu.addAction(pins_action)
-        build_flags_action = QAction("&Build Flags...", self)
-        build_flags_action.triggered.connect(self.show_build_flags)
-        tools_menu.addAction(build_flags_action)
-        tools_menu.addSeparator()
-        clean_action = QAction("&Clean Build", self)
-        clean_action.triggered.connect(self.clean_build)
-        tools_menu.addAction(clean_action)
-        device_monitor_action = QAction("Device &Monitor (PlatformIO)", self)
-        device_monitor_action.triggered.connect(self.open_device_monitor)
-        tools_menu.addAction(device_monitor_action)
-        tools_menu.addSeparator()
-        settings_action = QAction("&Settings...", self)
-        settings_action.triggered.connect(self.show_settings)
-        tools_menu.addAction(settings_action)
-
+        # Navigation: Next/Previous problem
+        next_problem_action = QAction("Next Problem", self)
+        next_problem_action.setShortcut("F8")
+        next_problem_action.triggered.connect(self.next_problem)
+        tools_menu.addAction(next_problem_action)
+        prev_problem_action = QAction("Previous Problem", self)
+        prev_problem_action.setShortcut("Shift+F8")
+        prev_problem_action.triggered.connect(self.prev_problem)
+        tools_menu.addAction(prev_problem_action)
         # Help menu
         help_menu = menubar.addMenu("&Help")
         reference_action = QAction("Programmer's &Reference", self)
@@ -789,6 +895,513 @@ class MainWindow(QMainWindow):
         about_action = QAction("&About Asic (Arduino Basic)", self)
         about_action.triggered.connect(self.show_about)
         help_menu.addAction(about_action)
+
+    def apply_high_contrast(self, enable: bool):
+        """Apply or remove a simple high-contrast stylesheet and persist setting."""
+        try:
+            if enable:
+                # Very simple high-contrast dark stylesheet
+                ss = """
+                QWidget { background-color: #000000; color: #FFFFFF; }
+                QMenuBar, QMenu, QStatusBar { background-color: #111111; color: #FFFFFF; }
+                QToolButton, QPushButton { background-color: #222222; color: #FFFFFF; border: 1px solid #444444; }
+                QComboBox { background-color: #111111; color: #FFFFFF; }
+                QTextEdit, QPlainTextEdit { background-color: #000000; color: #FFFFFF; }
+                """
+                self.setStyleSheet(ss)
+            else:
+                self.setStyleSheet("")
+            # persist
+            try:
+                self.settings.set("editor", "high_contrast", bool(enable))
+                self.settings.save()
+            except Exception:
+                pass
+            # sync action state
+            try:
+                if hasattr(self, 'high_contrast_action'):
+                    self.high_contrast_action.setChecked(bool(enable))
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def toggle_high_contrast(self, checked=None):
+        """Toggle high contrast; accepts optional checked from QAction.triggered."""
+        try:
+            if checked is None:
+                # flip
+                desired = not (self.settings.get("editor", "high_contrast", False))
+            else:
+                desired = bool(checked)
+            self.apply_high_contrast(desired)
+        except Exception:
+            pass
+    def create_problems_panel(self):
+        """Create dockable Problems panel to show linter diagnostics."""
+        from PyQt6.QtWidgets import QDockWidget, QTreeWidget, QTreeWidgetItem
+        self.problems_dock = QDockWidget("Problems", self)
+        self.problems_dock.setAllowedAreas(Qt.DockWidgetArea.BottomDockWidgetArea | Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea)
+        self.problems_widget = QTreeWidget()
+        self.problems_widget.setColumnCount(5)
+        self.problems_widget.setHeaderLabels(["Severity", "Message", "File", "Line", "Col"])
+        self.problems_widget.itemDoubleClicked.connect(self._on_problem_double_clicked)
+        # Also react to selection changes (single-click) to jump cursor
+        self.problems_widget.currentItemChanged.connect(self._on_problem_selected)
+        # Context menu for Quick Fixes
+        try:
+            self.problems_widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+            self.problems_widget.customContextMenuRequested.connect(self._on_problems_context_menu)
+        except Exception:
+            pass
+        self.problems_dock.setWidget(self.problems_widget)
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.problems_dock)
+        self.problems_dock.setVisible(False)
+
+    def toggle_problems(self, checked=None):
+        """Toggle Problems panel visibility. Accepts optional checked flag from QAction.triggered."""
+        try:
+            if checked is None:
+                # infer desired state from current visibility
+                desired = not self.problems_dock.isVisible()
+            else:
+                desired = bool(checked)
+            self.problems_dock.setVisible(desired)
+            # Ensure the action's checked state matches desired
+            self.toggle_problems_action.setChecked(desired)
+            # Update status indicator accordingly
+            self._update_problems_status()
+        except Exception:
+            pass
+
+    def run_linter(self):
+        """Run the lightweight linter on the current editor and populate Problems."""
+        try:
+            editor = self.get_current_editor()
+            if not editor:
+                return
+            text = editor.toPlainText()
+            from vb2arduino.linter import run_linter_on_text
+            path = str(self.current_file) if self.current_file else "<unsaved>"
+            diags = run_linter_on_text(text, path=path)
+            self._show_problems_from_diags(diags)
+            self.status.showMessage(f"Linter: {len(diags)} issues found", 3000)
+            # Show the panel if any diagnostics found
+            if diags:
+                self.problems_dock.setVisible(True)
+                self.toggle_problems_action.setChecked(True)
+        except Exception as e:
+            QMessageBox.critical(self, "Linter Error", f"Failed to run linter:\n{e}")
+
+    def _show_problems_from_diags(self, diags):
+        """Populate the problems widget from diagnostic list."""
+        from PyQt6.QtWidgets import QTreeWidgetItem
+        self.problems_widget.clear()
+        for d in diags:
+            item = QTreeWidgetItem([
+                d.get('severity', ''),
+                d.get('message', ''),
+                str(d.get('file', '')),
+                str(d.get('line', '')),
+                str(d.get('col', '')),
+            ])
+            # attach metadata
+            item.setData(0, Qt.ItemDataRole.UserRole, d)
+            self.problems_widget.addTopLevelItem(item)
+        # Also show inline gutter markers for the current editor when appropriate
+        try:
+            editor = self.get_current_editor()
+            if editor:
+                # Filter diagnostics to those matching the current file (or unsaved)
+                current_path = str(self.current_file) if self.current_file else '<unsaved>'
+                editor_diags = [d for d in diags if not d.get('file') or d.get('file') in (current_path, '<unsaved>', None)]
+                editor.set_diagnostics(editor_diags)
+        except Exception:
+            pass
+        # Update problems status indicator
+        self._update_problems_status()
+
+    def focus_problem(self, diag: dict):
+        """Show the Problems panel and focus/select the item matching diag."""
+        try:
+            self.problems_dock.setVisible(True)
+            self.toggle_problems_action.setChecked(True)
+            # Try to match by file and line
+            for i in range(self.problems_widget.topLevelItemCount()):
+                item = self.problems_widget.topLevelItem(i)
+                d = item.data(0, Qt.ItemDataRole.UserRole)
+                if not d:
+                    continue
+                try:
+                    file_ok = (not d.get('file')) or (not diag.get('file')) or str(d.get('file')) == str(diag.get('file'))
+                    line_ok = int(d.get('line', -1)) == int(diag.get('line', -1))
+                    if file_ok and line_ok:
+                        self.problems_widget.setCurrentItem(item)
+                        self.problems_widget.scrollToItem(item)
+                        self.problems_widget.setFocus()
+                        # Update status indicator
+                        self._update_problems_status()
+                        return
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+    def _on_problem_double_clicked(self, item, col):
+        """Jump to file/line when user double-clicks a problem."""
+        d = item.data(0, Qt.ItemDataRole.UserRole)
+        if not d:
+            return
+        self._jump_to_diag(d)
+        # Update status after double click as well
+        self._update_problems_status()
+
+    def _update_problems_status(self):
+        """Update the problems status label (e.g., 'Problem 2/5')."""
+        try:
+            total = self.problems_widget.topLevelItemCount()
+            if total == 0:
+                self.status_problems.setText("")
+                return
+            cur = self.problems_widget.currentItem()
+            if not cur:
+                # no selection — show total
+                self.status_problems.setText(f"Problems: {total}")
+                return
+            idx = self.problems_widget.indexOfTopLevelItem(cur)
+            if idx < 0:
+                self.status_problems.setText(f"Problems: {total}")
+                return
+            # 1-based index for display
+            self.status_problems.setText(f"Problem {idx+1}/{total}")
+        except Exception:
+            try:
+                self.status_problems.setText("")
+            except Exception:
+                pass
+    def _on_problem_selected(self, current, previous):
+        """Handle single-click selection in Problems panel by jumping cursor and update status."""
+        # Update status indicator when selection changes
+        self._update_problems_status()
+        if not current:
+            return
+        d = current.data(0, Qt.ItemDataRole.UserRole)
+        if not d:
+            return
+        self._jump_to_diag(d)
+
+    def _on_problems_context_menu(self, pos):
+        """Show a context menu with quick-fix actions for the selected problem (if available)."""
+        try:
+            item = self.problems_widget.itemAt(pos)
+            if not item:
+                return
+            d = item.data(0, Qt.ItemDataRole.UserRole)
+            if not d:
+                return
+            from vb2arduino.linter import available_fixes_for_diag
+            fixes = available_fixes_for_diag(d)
+            menu = QMenu(self)
+            if fixes:
+                for f in fixes:
+                    a = menu.addAction(f.get('label', 'Apply'))
+                    # capture fix id and diag in closure
+                    a.triggered.connect(lambda checked=False, diag=d, fid=f.get('id'): self.apply_quick_fix_for_diag(diag, fid))
+            else:
+                a = menu.addAction("No quick fixes")
+                a.setEnabled(False)
+            menu.exec(self.problems_widget.viewport().mapToGlobal(pos))
+        except Exception:
+            pass
+
+    def apply_quick_fix_for_current_problem(self):
+        """Apply the first available quick fix for the currently selected problem in the Problems panel."""
+        try:
+            cur = self.problems_widget.currentItem()
+            if not cur:
+                self.status.showMessage("No problem selected for Quick Fix", 2000)
+                return
+            d = cur.data(0, Qt.ItemDataRole.UserRole)
+            if not d:
+                self.status.showMessage("Selected problem has no data", 2000)
+                return
+            from vb2arduino.linter import available_fixes_for_diag
+            fixes = available_fixes_for_diag(d)
+            if not fixes:
+                self.status.showMessage("No quick fixes available for the selected problem", 2000)
+                return
+            # Apply the first fix by default
+            fix_id = fixes[0].get('id')
+            self.apply_quick_fix_for_diag(d, fix_id)
+        except Exception as e:
+            QMessageBox.warning(self, "Quick Fix Failed", f"Failed to apply quick fix: {e}")
+
+    def apply_quick_fix_for_diag(self, diag: dict, fix_id: str):
+        """Apply the specified quick fix for the given diagnostic. Operates on the indicated file if present."""
+        try:
+            file_path = diag.get('file')
+            # If the diagnostic refers to another file, open it
+            if file_path and file_path not in ('', '<unsaved>'):
+                try:
+                    self.open_file_in_tab(file_path)
+                except Exception:
+                    pass
+            editor = self.get_current_editor()
+            if not editor:
+                self.status.showMessage("No active editor to apply quick fix", 2000)
+                return
+            original = editor.toPlainText()
+            from vb2arduino.linter import apply_fix_on_text
+            new_text = apply_fix_on_text(original, diag, fix_id)
+            if new_text == original:
+                self.status.showMessage("Quick fix made no changes", 2000)
+                return
+            # Apply changes and re-run linter
+            editor.setPlainText(new_text)
+            # Move caret to the location where the change occurred (try to put at diag line)
+            try:
+                line_no = int(diag.get('line', 1))
+                cursor = editor.textCursor()
+                cursor.movePosition(cursor.MoveOperation.Start)
+                for _ in range(max(0, line_no - 1)):
+                    cursor.movePosition(cursor.MoveOperation.Down)
+                editor.setTextCursor(cursor)
+                editor.setFocus()
+            except Exception:
+                pass
+            # Re-run linter to refresh problems
+            self.run_linter()
+            self.status.showMessage("Quick fix applied", 3000)
+        except Exception as e:
+            QMessageBox.warning(self, "Quick Fix Error", f"Failed to apply quick fix: {e}")
+
+    def _jump_to_diag(self, d: dict):
+        """Jump to diagnostic location in the editor. Opens file if needed."""
+        try:
+            file_path = d.get('file')
+            line_no = int(d.get('line')) if d.get('line') else 1
+            # Treat '<unsaved>' or empty file markers as referring to the current editor
+            if not file_path or file_path in ('<unsaved>', ''):
+                file_path = None
+            # If no file specified, jump in current editor
+            if file_path is None:
+                editor = self.get_current_editor()
+                if editor:
+                    cursor = editor.textCursor()
+                    cursor.movePosition(cursor.MoveOperation.Start)
+                    for _ in range(line_no - 1):
+                        cursor.movePosition(cursor.MoveOperation.Down)
+                    editor.setTextCursor(cursor)
+                    # visually highlight the target line
+                    try:
+                        editor.highlight_line(line_no)
+                    except Exception:
+                        pass
+                    editor.setFocus()
+            # If the file matches current_file, jump there
+            elif self.current_file and str(self.current_file) == str(file_path):
+                editor = self.get_current_editor()
+                if editor:
+                    cursor = editor.textCursor()
+                    cursor.movePosition(cursor.MoveOperation.Start)
+                    for _ in range(line_no - 1):
+                        cursor.movePosition(cursor.MoveOperation.Down)
+                    editor.setTextCursor(cursor)
+                    try:
+                        editor.highlight_line(line_no)
+                    except Exception:
+                        pass
+                    editor.setFocus()
+            else:
+                # try to open the file path
+                try:
+                    self.open_file_in_tab(file_path)
+                    # then move cursor
+                    ed = self.get_current_editor()
+                    if ed:
+                        cursor = ed.textCursor()
+                        cursor.movePosition(cursor.MoveOperation.Start)
+                        for _ in range(line_no - 1):
+                            cursor.movePosition(cursor.MoveOperation.Down)
+                        ed.setTextCursor(cursor)
+                        try:
+                            ed.highlight_line(line_no)
+                        except Exception:
+                            pass
+                        ed.setFocus()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    def next_problem(self):
+        """Select the next problem in the Problems panel and jump to it (wraps)."""
+        try:
+            count = self.problems_widget.topLevelItemCount()
+            if count == 0:
+                self._update_problems_status()
+                return
+            cur = self.problems_widget.currentItem()
+            start = 0
+            if cur:
+                start = self.problems_widget.indexOfTopLevelItem(cur) + 1
+            for i in range(count):
+                idx = (start + i) % count
+                item = self.problems_widget.topLevelItem(idx)
+                if item:
+                    self.problems_widget.setCurrentItem(item)
+                    self._update_problems_status()
+                    d = item.data(0, Qt.ItemDataRole.UserRole)
+                    if d:
+                        self._jump_to_diag(d)
+                    return
+        except Exception:
+            pass
+
+    def prev_problem(self):
+        """Select the previous problem in the Problems panel and jump to it (wraps)."""
+        try:
+            count = self.problems_widget.topLevelItemCount()
+            if count == 0:
+                self._update_problems_status()
+                return
+            cur = self.problems_widget.currentItem()
+            if cur:
+                start = self.problems_widget.indexOfTopLevelItem(cur) - 1
+            else:
+                start = count - 1
+            for i in range(count):
+                idx = (start - i) % count
+                item = self.problems_widget.topLevelItem(idx)
+                if item:
+                    self.problems_widget.setCurrentItem(item)
+                    self._update_problems_status()
+                    d = item.data(0, Qt.ItemDataRole.UserRole)
+                    if d:
+                        self._jump_to_diag(d)
+                    return
+        except Exception:
+            pass
+
+    def go_to_definition(self):
+        """Jump to the procedure/function definition for the symbol under the cursor (F12)."""
+        try:
+            editor = self.get_current_editor()
+            if not editor:
+                self.status.showMessage("No active editor", 2000)
+                return
+            symbol = editor.text_under_cursor().strip()
+            if not symbol:
+                self.status.showMessage("No symbol under cursor", 2000)
+                return
+            # Search open tabs for a procedure/function with this name
+            for i in range(self.tab_widget.count()):
+                tab = self.tab_widget.widget(i)
+                if not hasattr(tab, 'editor'):
+                    continue
+                ed = tab.editor
+                # Ensure procedures are up to date
+                ed.parse_code()
+                for proc_name, line_no in ed.procedures:
+                    # proc_name looks like 'Sub Foo' or 'Function Bar'; we extract the last token
+                    try:
+                        name = proc_name.split()[-1]
+                    except Exception:
+                        name = proc_name
+                    if name.lower() == symbol.lower():
+                        # switch to tab and jump
+                        self.tab_widget.setCurrentIndex(i)
+                        cursor = ed.textCursor()
+                        cursor.movePosition(cursor.MoveOperation.Start)
+                        for _ in range(max(0, line_no - 1)):
+                            cursor.movePosition(cursor.MoveOperation.Down)
+                        ed.setTextCursor(cursor)
+                        ed.setFocus()
+                        ed.highlight_line(line_no)
+                        self.status.showMessage(f"Jumped to definition of '{symbol}'", 2000)
+                        return
+            self.status.showMessage(f"Definition for '{symbol}' not found", 3000)
+        except Exception as e:
+            QMessageBox.warning(self, "Go to Definition", f"Failed to go to definition: {e}")
+
+    def find_references(self, show_dialog: bool = True):
+        """Find all references to the symbol under the cursor across open tabs (Shift+F12).
+
+        When `show_dialog` is False (used by tests), the function returns the results list
+        instead of showing a modal dialog.
+        """
+        try:
+            editor = self.get_current_editor()
+            if not editor:
+                self.status.showMessage("No active editor", 2000)
+                return [] if not show_dialog else None
+            symbol = editor.text_under_cursor().strip()
+            if not symbol:
+                self.status.showMessage("No symbol under cursor", 2000)
+                return [] if not show_dialog else None
+            import re
+            pat = re.compile(r"\b" + re.escape(symbol) + r"\b", re.IGNORECASE)
+            results = []
+            for i in range(self.tab_widget.count()):
+                tab = self.tab_widget.widget(i)
+                if not hasattr(tab, 'editor'):
+                    continue
+                ed = tab.editor
+                text = ed.toPlainText()
+                for m in pat.finditer(text):
+                    # compute line number
+                    start = m.start()
+                    line_no = text.count('\n', 0, start) + 1
+                    # snippet for context
+                    line = text.splitlines()[line_no - 1].strip() if line_no - 1 < len(text.splitlines()) else ''
+                    file_path = tab.property('file_path') or '<unsaved>'
+                    results.append({'file': file_path, 'line': line_no, 'col': m.start() - text.rfind('\n', 0, start), 'snippet': line, 'tab_index': i})
+            # Show results dialog
+            dlg = QDialog(self)
+            dlg.setWindowTitle(f"References for '{symbol}' ({len(results)})")
+            dlg.setModal(True)
+            dlg_layout = QVBoxLayout()
+            listw = QListWidget()
+            if not show_dialog:
+                return results
+            for r in results:
+                item = QListWidgetItem(f"{r['file']}:{r['line']} - {r['snippet']}")
+                item.setData(Qt.ItemDataRole.UserRole, r)
+                listw.addItem(item)
+            listw.itemDoubleClicked.connect(lambda it: self._on_reference_activated(it, dlg))
+            dlg_layout.addWidget(listw)
+            dlg.setLayout(dlg_layout)
+            dlg.resize(800, 400)
+            dlg.exec()
+        except Exception as e:
+            QMessageBox.warning(self, "Find References", f"Failed to find references: {e}")
+
+    def _on_reference_activated(self, item, dialog=None):
+        try:
+            data = item.data(Qt.ItemDataRole.UserRole)
+            if not data:
+                return
+            idx = data.get('tab_index')
+            if idx is None:
+                return
+            self.tab_widget.setCurrentIndex(idx)
+            ed = self.get_current_editor()
+            if ed:
+                line_no = data.get('line', 1)
+                cursor = ed.textCursor()
+                cursor.movePosition(cursor.MoveOperation.Start)
+                for _ in range(max(0, line_no - 1)):
+                    cursor.movePosition(cursor.MoveOperation.Down)
+                ed.setTextCursor(cursor)
+                ed.setFocus()
+            if dialog:
+                try:
+                    dialog.accept()
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
 
     def toggle_explorer(self, checked):
         """Show or hide the project explorer (tree view) window."""
@@ -877,6 +1490,8 @@ End Sub
     def _save_to_file(self, path: pathlib.Path):
         """Internal save helper."""
         try:
+            # Accept str paths too
+            path = pathlib.Path(path)
             editor = self.get_current_editor()
             if not editor:
                 return False
@@ -896,8 +1511,16 @@ End Sub
             )
             
             self.status.showMessage(f"Saved: {path}")
+            # Run linter on save to populate Problems panel
+            try:
+                self.run_linter()
+            except Exception:
+                pass
             return True
         except Exception as e:
+            import traceback, sys
+            traceback.print_exc()
+            print('Save failed:', e, file=sys.stderr)
             QMessageBox.critical(self, "Error", f"Failed to save file:\n{e}")
             return False
             

@@ -23,6 +23,9 @@ class SerialPlotter(QWidget):
         # Prevent the combo from expanding too wide and potentially overlapping other widgets
         self.yrange_combo.setMaximumWidth(140)
         self.yrange_combo.setToolTip("Select Y axis range for plotted data")
+        # Accessibility
+        self.yrange_combo.setAccessibleName("Y Range Selector")
+        self.yrange_combo.setAccessibleDescription("Select the Y axis range for plotted data")
         controls.addWidget(self.yrange_combo)
         controls.addStretch()
         self.clear_btn = QPushButton("Clear")

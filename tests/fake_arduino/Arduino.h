@@ -63,3 +63,5 @@ static SerialClass Serial;
 #define TFT_DARKGREY 0
 #define TFT_RED 2
 #define TFT_WHITE 3
+#define TFT_LIGHTGREY 4
+

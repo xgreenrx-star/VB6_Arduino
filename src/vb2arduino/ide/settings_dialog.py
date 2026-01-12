@@ -56,32 +56,32 @@ class SettingsDialog(QDialog):
         """Create editor settings tab."""
         widget = QWidget()
         layout = QVBoxLayout()
-        
+
         # Font settings
         font_group = QGroupBox("Font")
         font_layout = QFormLayout()
-        
+
         self.font_family = QFontComboBox()
         font_layout.addRow("Font Family:", self.font_family)
-        
+
         self.font_size = QSpinBox()
         self.font_size.setRange(8, 32)
         font_layout.addRow("Font Size:", self.font_size)
-        
+
         font_group.setLayout(font_layout)
         layout.addWidget(font_group)
-        
+
         # Color settings
         color_group = QGroupBox("Colors")
         color_layout = QFormLayout()
-        
+
         self.add_color_picker(color_layout, "editor", "background_color", "Background:")
         self.add_color_picker(color_layout, "editor", "text_color", "Text:")
         self.add_color_picker(color_layout, "editor", "current_line_color", "Current Line:")
         self.add_color_picker(color_layout, "editor", "line_number_bg", "Line Number Background:")
         self.add_color_picker(color_layout, "editor", "line_number_fg", "Line Number Foreground:")
         self.add_color_picker(color_layout, "editor", "jump_highlight_color", "Jump Highlight:")
-        
+
         color_group.setLayout(color_layout)
         layout.addWidget(color_group)
 
@@ -103,9 +103,15 @@ class SettingsDialog(QDialog):
         self.upload_failure_popup_cb = QCheckBox("Show Upload Failure Pop-up")
         behavior_layout.addRow("Compile Failure Pop-up:", self.compile_failure_popup_cb)
         behavior_layout.addRow("Upload Failure Pop-up:", self.upload_failure_popup_cb)
+        # Auto-save
+        self.auto_save_cb = QCheckBox("Enable Auto-Save (every N seconds)")
+        self.auto_save_interval = QSpinBox()
+        self.auto_save_interval.setRange(5, 600)
+        self.auto_save_interval.setValue(30)
+        behavior_layout.addRow(self.auto_save_cb, self.auto_save_interval)
         behavior_group.setLayout(behavior_layout)
         layout.addWidget(behavior_group)
-        
+
         layout.addStretch()
         widget.setLayout(layout)
         return widget
@@ -212,7 +218,7 @@ class SettingsDialog(QDialog):
         self.font_size.setValue(
             self.settings.get("editor", "font_size", 11)
         )
-        
+
         # Load colors into buttons
         for key, btn in self.color_buttons.items():
             category, setting = key.split(".")
@@ -234,6 +240,9 @@ class SettingsDialog(QDialog):
         self.upload_failure_popup_cb.setChecked(
             self.settings.get("editor", "show_upload_failure_popup", True)
         )
+        # Auto-save
+        self.auto_save_cb.setChecked(self.settings.get("editor", "auto_save_enabled", False))
+        self.auto_save_interval.setValue(self.settings.get("editor", "auto_save_interval", 30))
             
         # Syntax style checkboxes
         self.keyword_bold.setChecked(
@@ -260,7 +269,7 @@ class SettingsDialog(QDialog):
         # Editor settings
         self.settings.set("editor", "font_family", self.font_family.currentFont().family())
         self.settings.set("editor", "font_size", self.font_size.value())
-        
+
         # Colors from buttons
         for key, btn in self.color_buttons.items():
             category, setting = key.split(".")
@@ -272,7 +281,10 @@ class SettingsDialog(QDialog):
         self.settings.set("editor", "show_upload_success_popup", self.upload_success_popup_cb.isChecked())
         self.settings.set("editor", "show_compile_failure_popup", self.compile_failure_popup_cb.isChecked())
         self.settings.set("editor", "show_upload_failure_popup", self.upload_failure_popup_cb.isChecked())
-            
+        # Auto-save
+        self.settings.set("editor", "auto_save_enabled", self.auto_save_cb.isChecked())
+        self.settings.set("editor", "auto_save_interval", self.auto_save_interval.value())
+
         # Syntax style checkboxes
         self.settings.set("syntax", "keyword_bold", self.keyword_bold.isChecked())
         self.settings.set("syntax", "function_bold", self.function_bold.isChecked())
@@ -280,7 +292,7 @@ class SettingsDialog(QDialog):
         self.settings.set("syntax", "number_bold", self.number_bold.isChecked())
         self.settings.set("syntax", "string_bold", self.string_bold.isChecked())
         self.settings.set("syntax", "comment_italic", self.comment_italic.isChecked())
-        
+
         self.settings.save()
         
     def reset_to_defaults(self):

@@ -78,13 +78,17 @@ class VBTranspiler:
 
         current = None  # None, "setup", "loop", "function"
         label_set = set()
-        # Per-function variable tracking
+        # Per-function and per-context variable tracking
         all_functions = []
         function_lines_buffer = []
         function_var_candidates = set()
         function_dim_vars = set()
         function_param_vars = set()
         function_header = None
+        # Track DIM'd vars in other contexts to avoid duplicate declarations
+        setup_dim_vars = set()
+        loop_dim_vars = set()
+        global_dim_vars = set()
         # Track VB source line numbers for error mapping
         for vb_line_no, raw in enumerate(source.splitlines(), start=1):
             line = raw.strip()
@@ -143,20 +147,47 @@ class VBTranspiler:
                         vars.append(''.join(current).strip())
                     return vars
                 debug_vars = []
+                # Determine variable names from the Dim line without emitting duplicates.
+                new_debug_vars = []
                 for var_decl in split_dim_vars(dim_line):
                     # Extract the first word (variable name) before any space, '(', or '='
                     var_name = var_decl.strip()
                     m = re.match(r"(\w+)", var_name)
-                    if m:
-                        function_dim_vars.add(m.group(1))
-                        debug_vars.append(m.group(1))
-                if debug_vars:
+                    if not m:
+                        continue
+                    name = m.group(1)
+                    # Decide which context set to consult/modify
+                    if current == "function":
+                        if name in function_dim_vars:
+                            continue
+                        function_dim_vars.add(name)
+                    elif current == "setup":
+                        if name in setup_dim_vars:
+                            continue
+                        setup_dim_vars.add(name)
+                    elif current == "loop":
+                        if name in loop_dim_vars:
+                            continue
+                        loop_dim_vars.add(name)
+                    else:
+                        if name in global_dim_vars:
+                            continue
+                        global_dim_vars.add(name)
+                    new_debug_vars.append(name)
+
+                if new_debug_vars:
                     # Use logger.debug instead of print to avoid noisy output during normal runs
                     import logging
-                    logging.getLogger(__name__).debug("Hoisted from Dim: %s", debug_vars)
+                    logging.getLogger(__name__).debug("Hoisted from Dim: %s", new_debug_vars)
                 if statement:
-                    # Emit a declaration for EACH variable found in the Dim line
+                    # Emit a declaration for EACH *new* variable found in the Dim line
                     for var_decl in split_dim_vars(dim_line):
+                        m2 = re.match(r"(\w+)", var_decl.strip())
+                        if not m2:
+                            continue
+                        name = m2.group(1)
+                        if name not in new_debug_vars:
+                            continue
                         stmt_var = self._emit_dim(f"DIM {var_decl}")
                         if not stmt_var:
                             continue
@@ -297,11 +328,21 @@ class VBTranspiler:
                         # If token appears as an object property (preceded by '.') skip it
                         if re.search(rf"\.{re.escape(token)}\b", line):
                             continue
+                        # If token appears as an object instance followed by '.' (e.g., ball.pushSprite) skip it
+                        if re.search(rf"\b{re.escape(token)}\s*\.", line):
+                            continue
                         var_names.add(token)
-                # Remove parameters and already hoisted vars
+                # Remove parameters, dims and globals from hoisting set
                 param_vars = func.get('param_vars', set())
                 dim_vars = func.get('dim_vars', set())
-                hoisted = set(param_vars) | set(dim_vars)
+                # Collect global var names declared at top-level to avoid re-declaring them inside functions
+                global_var_names = set()
+                gvar_pattern = re.compile(r'\b(?:float|int|double|long|bool|char|String|const auto)\s+([a-zA-Z_][a-zA-Z0-9_]*)\b')
+                for gl in self.global_lines:
+                    gm = gvar_pattern.search(gl)
+                    if gm:
+                        global_var_names.add(gm.group(1))
+                hoisted = set(param_vars) | set(dim_vars) | global_var_names
                 to_hoist = sorted(var_names - hoisted)
                 # Emit the function as a single unit: header, hoisted vars, body, closing brace
                 self.function_lines.append(header + '\n')
@@ -481,7 +522,7 @@ class VBTranspiler:
         upper = line.upper()
 
         # --- For loop (patch: avoid redeclaring already-declared variables) ---
-        m_for = re.match(r"FOR\s+(\w+)\s*=\s*([^\s]+)\s+TO\s+([^\s]+)(?:\s+STEP\s+([^\s]+))?", line, re.IGNORECASE)
+        m_for = re.match(r"FOR\s+(\w+)\s*=\s*(.+?)\s+TO\s+(.+?)(?:\s+STEP\s+(.+))?\s*$", line, re.IGNORECASE)
         if m_for:
             var, start, end, step = m_for.groups()
             step = step or "1"
@@ -492,7 +533,7 @@ class VBTranspiler:
                     already_declared = True
                     break
             decl = f"int {var} = {self._expr(start)};" if not already_declared else f"{var} = {self._expr(start)};"
-            cond = f"(({'1' if step.startswith('-') else '1'}) >= 0 ? {var} <= {self._expr(end)} : {var} >= {self._expr(end)})"
+            cond = f"(({self._expr(step)}) >= 0 ? {var} <= {self._expr(end)} : {var} >= {self._expr(end)})"
             inc = f"{var} += ({self._expr(step)})"
             return f"for ({decl} {cond}; {inc}) {{"
 
@@ -804,6 +845,13 @@ class VBTranspiler:
             (r"FILLRECT\s+(.+?),\s*(.+?),\s*(.+?),\s*(.+?),\s*(.+)", lambda m: f"{self._get_graphics_call('fillRect', self._expr(m.group(1)), self._expr(m.group(2)), self._expr(m.group(3)), self._expr(m.group(4)), self._expr(m.group(5)))};"),
             (r"DRAWCIRCLE\s+(.+?),\s*(.+?),\s*(.+?),\s*(.+)", lambda m: f"{self._get_graphics_call('drawCircle', self._expr(m.group(1)), self._expr(m.group(2)), self._expr(m.group(3)), self._expr(m.group(4)))};"),
             (r"FILLCIRCLE\s+(.+?),\s*(.+?),\s*(.+?),\s*(.+)", lambda m: f"{self._get_graphics_call('fillCircle', self._expr(m.group(1)), self._expr(m.group(2)), self._expr(m.group(3)), self._expr(m.group(4)))};"),
+            # Sprite commands: CREATE_SPRITE name, w, h
+            (r"CREATE_SPRITE\s+(\w+),\s*(.+?),\s*(.+)", lambda m: self._emit_create_sprite(m.group(1), m.group(2), m.group(3))),
+            (r"SPRITE_FILL\s+(\w+),\s*(.+)", lambda m: self._emit_sprite_method('fillSprite', m.group(1), [m.group(2)])),
+            (r"SPRITE_FILL_ELLIPSE\s+(\w+),\s*(.+)", lambda m: self._handle_sprite_fill_ellipse(m)),
+            (r"SPRITE_FILL_TRIANGLE\s+(\w+),\s*(.+)", lambda m: self._handle_sprite_fill_triangle(m)),
+            (r"SPRITE_PUSH\s+(\w+),\s*(.+?),\s*(.+?)(?:,\s*(.+))?\s*$", lambda m: self._emit_sprite_push(m.group(1), m.group(2), m.group(3), m.group(4))),
+            (r"SPRITE_DELETE\s+(\w+)", lambda m: self._emit_sprite_method('deleteSprite', m.group(1), [])),
             (r"DRAWTRIANGLE\s+(.+?),\s*(.+?),\s*(.+?),\s*(.+?),\s*(.+?),\s*(.+?),\s*(.+)", lambda m: f"{self._get_graphics_call('drawTriangle', self._expr(m.group(1)), self._expr(m.group(2)), self._expr(m.group(3)), self._expr(m.group(4)), self._expr(m.group(5)), self._expr(m.group(6)), self._expr(m.group(7)))};"),
             (r"FILLTRIANGLE\s+(.+?),\s*(.+?),\s*(.+?),\s*(.+?),\s*(.+?),\s*(.+?),\s*(.+)", lambda m: f"{self._get_graphics_call('fillTriangle', self._expr(m.group(1)), self._expr(m.group(2)), self._expr(m.group(3)), self._expr(m.group(4)), self._expr(m.group(5)), self._expr(m.group(6)), self._expr(m.group(7)))};"),
             (r"DRAWPIXEL\s+(.+?),\s*(.+?),\s*(.+)", lambda m: f"{self._get_graphics_call('drawPixel', self._expr(m.group(1)), self._expr(m.group(2)), self._expr(m.group(3)))};"),
@@ -828,8 +876,9 @@ class VBTranspiler:
         for pat, fn in io_patterns:
             m = re.match(pat, line, re.IGNORECASE)
             if m:
-                return fn(m)
-        
+                res = fn(m)
+                # If the handler returns None, it already injected side-effects (eg. sprite creation)
+                return res        
         # Handle assignments
         if "=" in line:
             m_assign = re.match(r"(\w+)\s*=\s*(.+)", line)
@@ -1353,6 +1402,51 @@ class VBTranspiler:
                     args_str = ", ".join(str(arg) for arg in args_list)
         
         return f"{self.display_object}.{method}({args_str})"
+
+    # Sprite helpers
+    def _emit_create_sprite(self, name: str, w: str, h: str) -> str | None:
+        w_expr = self._expr(w)
+        h_expr = self._expr(h)
+        decl = f"TFT_eSprite {name} = TFT_eSprite(&tft);"
+        if decl not in self.global_lines:
+            # place declaration after helpers to keep globals organized
+            self.global_lines.append(decl)
+            if self.setup_lines is not None:
+                # create sprite in setup AFTER any size/initialization assignments
+                self.setup_lines.append(f"{name}.createSprite({w_expr}, {h_expr});")
+        return f"// CREATE_SPRITE {name} {w_expr} {h_expr}"
+
+    # Handlers that need balanced param splitting
+    def _handle_sprite_fill_ellipse(self, m) -> str:
+        name = m.group(1)
+        params = self._split_params_balanced(m.group(2))
+        if len(params) < 5:
+            # fall back to raw emission so failures are visible
+            return f"// TODO: SPRITE_FILL_ELLIPSE parse error: {m.group(0)}"
+        # ensure exactly 5 parameters
+        args = params[:5]
+        return self._emit_sprite_method('fillEllipse', name, args)
+
+    def _handle_sprite_fill_triangle(self, m) -> str:
+        name = m.group(1)
+        params = self._split_params_balanced(m.group(2))
+        if len(params) < 7:
+            return f"// TODO: SPRITE_FILL_TRIANGLE parse error: {m.group(0)}"
+        args = params[:7]
+        return self._emit_sprite_method('fillTriangle', name, args)
+
+    def _emit_sprite_method(self, method: str, name: str, args: list) -> str:
+        args_str = ", ".join(self._expr(a) for a in args)
+        return f"{name}.{method}({args_str});"
+
+    def _emit_sprite_push(self, name: str, x: str, y: str, bg: str | None) -> str:
+        x_expr = self._expr(x)
+        y_expr = self._expr(y)
+        if bg:
+            bg_expr = self._expr(bg)
+            return f"{name}.pushSprite({x_expr}, {y_expr}, {bg_expr});"
+        return f"{name}.pushSprite({x_expr}, {y_expr});"
+
     def _map_vb_constants(self, expr: str) -> str:
         """Map VB6 and GDScript built-in constants to C++ equivalents."""
         vb_const_map = {

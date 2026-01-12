@@ -23,6 +23,8 @@ class Settings:
             "show_upload_success_popup": True,
             "show_compile_failure_popup": True,
             "show_upload_failure_popup": True,
+            # Accessibility
+            "high_contrast": False,
         },
         "syntax": {
             "keyword_color": "#0000FF",

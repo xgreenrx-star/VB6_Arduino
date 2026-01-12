@@ -61,7 +61,7 @@ class SerialMonitor(QWidget):
 
     def show_plotter(self):
         self.plotter.show()
-        
+
     def init_ui(self):
         """Initialize UI."""
         layout = QVBoxLayout()
@@ -82,6 +82,9 @@ class SerialMonitor(QWidget):
         # Match width to other combos and provide tooltip
         self.baud_combo.setMaximumWidth(140)
         self.baud_combo.setToolTip("Select serial baud rate for connection")
+        # Accessibility
+        self.baud_combo.setAccessibleName("Baud Rate Selector")
+        self.baud_combo.setAccessibleDescription("Select a baud rate to use for serial connection")
         toolbar.addWidget(self.baud_combo)
         
         toolbar.addSpacing(12)
@@ -90,33 +93,46 @@ class SerialMonitor(QWidget):
         self.connect_btn = QPushButton("Connect")
         self.connect_btn.setMaximumWidth(100)
         self.connect_btn.clicked.connect(self.toggle_connection)
+        # Accessibility
+        self.connect_btn.setAccessibleName("Connect Button")
+        self.connect_btn.setAccessibleDescription("Connect or disconnect the serial monitor")
         toolbar.addWidget(self.connect_btn)
         
         # Clear button
         self.clear_btn = QPushButton("Clear")
         self.clear_btn.setMaximumWidth(80)
         self.clear_btn.clicked.connect(self.clear_output)
+        self.clear_btn.setAccessibleName("Clear Button")
+        self.clear_btn.setAccessibleDescription("Clear the serial output display")
         toolbar.addWidget(self.clear_btn)
 
         # Autoscroll toggle
         self.autoscroll_checkbox = QCheckBox("Autoscroll")
         self.autoscroll_checkbox.setChecked(True)
+        self.autoscroll_checkbox.setAccessibleName("Autoscroll Checkbox")
+        self.autoscroll_checkbox.setAccessibleDescription("Automatically scroll the serial output to latest data")
         toolbar.addWidget(self.autoscroll_checkbox)
 
         # Timestamp toggle
         self.timestamp_checkbox = QCheckBox("Timestamp")
         self.timestamp_checkbox.setChecked(True)
+        self.timestamp_checkbox.setAccessibleName("Timestamp Checkbox")
+        self.timestamp_checkbox.setAccessibleDescription("Toggle timestamps for incoming serial data")
         toolbar.addWidget(self.timestamp_checkbox)
 
         # Hex view toggle
         self.hex_checkbox = QCheckBox("Hex")
         self.hex_checkbox.setToolTip("Show incoming data in hex format")
+        self.hex_checkbox.setAccessibleName("Hex View Checkbox")
+        self.hex_checkbox.setAccessibleDescription("Display incoming serial data as hexadecimal values")
         toolbar.addWidget(self.hex_checkbox)
 
         # Save log button
         self.save_btn = QPushButton("Save Log")
         self.save_btn.setMaximumWidth(90)
         self.save_btn.clicked.connect(self.save_log)
+        self.save_btn.setAccessibleName("Save Log Button")
+        self.save_btn.setAccessibleDescription("Save current serial output to a file")
         toolbar.addWidget(self.save_btn)
 
         # Overflow / More menu for small widths

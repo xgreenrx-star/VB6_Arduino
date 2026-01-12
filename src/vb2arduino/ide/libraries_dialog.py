@@ -269,11 +269,12 @@ class LibrariesDialog(QDialog):
             item.setCheckState(Qt.CheckState.Unchecked)
             
     def get_selected_libraries(self):
-        """Get list of selected library files."""
+        """Get list of selected library #Include directives."""
         selected = []
         for i in range(self.library_list.count()):
             item = self.library_list.item(i)
             if item.checkState() == Qt.CheckState.Checked:
                 lib_file = item.data(Qt.ItemDataRole.UserRole)
-                selected.append(lib_file)
+                # Always use #Include <header_file> format
+                selected.append(f'#Include <{lib_file}>')
         return selected

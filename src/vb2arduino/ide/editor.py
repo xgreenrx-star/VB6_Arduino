@@ -1,6 +1,6 @@
 """Code editor with VB syntax highlighting."""
 
-from PyQt6.QtWidgets import QPlainTextEdit, QWidget, QTextEdit, QComboBox, QVBoxLayout, QCompleter, QTreeView, QHeaderView, QMenu
+from PyQt6.QtWidgets import QPlainTextEdit, QWidget, QTextEdit, QComboBox, QVBoxLayout, QCompleter, QTreeView, QHeaderView, QMenu, QToolTip
 from PyQt6.QtGui import (
     QSyntaxHighlighter, QTextCharFormat, QColor, QFont, 
     QPainter, QTextFormat, QTextCursor, QPalette, QAction
@@ -14,6 +14,7 @@ from .hover_tooltip import show_hover_tooltip
 from .auto_indent import AutoIndenter
 from .snippets import SnippetManager
 import re
+from typing import Optional, Tuple
 
 
 class VBSyntaxHighlighter(QSyntaxHighlighter):
@@ -160,6 +161,19 @@ class LineNumberArea(QWidget):
     def paintEvent(self, event):
         self.code_editor.line_number_area_paint_event(event)
 
+    def mousePressEvent(self, event):
+        """Forward gutter clicks to editor for handling diagnostics/folding."""
+        try:
+            # Convert local click to an editor-local QPoint (x small, y preserved)
+            from PyQt6.QtCore import QPoint
+            click_pos = QPoint(2, event.pos().y())
+            if hasattr(self.code_editor, 'on_gutter_click'):
+                self.code_editor.on_gutter_click(click_pos)
+        except Exception:
+            pass
+        # Ensure default behavior
+        QWidget.mousePressEvent(self, event)
+
 
 class CodeEditor(QPlainTextEdit):
     """Code editor with line numbers and syntax highlighting."""
@@ -168,12 +182,12 @@ class CodeEditor(QPlainTextEdit):
     
     def __init__(self, settings=None):
         super().__init__()
-        
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setReadOnly(False)
         self.settings = settings if settings else Settings()
         self.procedures = []  # List of (name, line_number) tuples
         self.variables = []  # List of variable names
         self._is_modified = False
-        
         # Feature helpers
         self.auto_indenter = AutoIndenter()
         self.snippet_manager = SnippetManager()
@@ -217,10 +231,25 @@ class CodeEditor(QPlainTextEdit):
         self.apply_colors()
 
         # Temporary jump highlight support (init before any highlighting)
+        # Diagnostics mapping: line -> [diagnostics]
+        self.diagnostics = {}
+
         self._temp_highlight = None
         self._temp_highlight_timer = QTimer(self)
         self._temp_highlight_timer.setSingleShot(True)
         self._temp_highlight_timer.timeout.connect(self._clear_temp_highlight)
+
+        # Folding support
+        self.block_pairs: list[tuple[re.Pattern, re.Pattern]] = [
+            (re.compile(r"^\s*Sub\b", re.IGNORECASE), re.compile(r"^\s*End\s+Sub\b", re.IGNORECASE)),
+            (re.compile(r"^\s*Function\b", re.IGNORECASE), re.compile(r"^\s*End\s+Function\b", re.IGNORECASE)),
+            (re.compile(r"^\s*If\b", re.IGNORECASE), re.compile(r"^\s*End\s+If\b", re.IGNORECASE)),
+            (re.compile(r"^\s*For\b", re.IGNORECASE), re.compile(r"^\s*Next\b", re.IGNORECASE)),
+            (re.compile(r"^\s*While\b", re.IGNORECASE), re.compile(r"^\s*Wend\b", re.IGNORECASE)),
+            (re.compile(r"^\s*Do\b", re.IGNORECASE), re.compile(r"^\s*Loop\b", re.IGNORECASE)),
+            (re.compile(r"^\s*Select\s+Case\b", re.IGNORECASE), re.compile(r"^\s*End\s+Select\b", re.IGNORECASE)),
+            (re.compile(r"^\s*With\b", re.IGNORECASE), re.compile(r"^\s*End\s+With\b", re.IGNORECASE)),
+        ]
 
         self.update_line_number_area_width(0)
         self.highlight_current_line()
@@ -293,8 +322,8 @@ class CodeEditor(QPlainTextEdit):
     def keyPressEvent(self, event):
         """Handle key press events for auto-completion."""
         # Navigation keys should close the popup and move the cursor, not navigate the popup
-        if event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_Page_Up, Qt.Key.Key_Page_Down, 
-                          Qt.Key.Key_Home, Qt.Key.Key_End):
+        if event.key() in (Qt.Key.Key_Up, Qt.Key.Key_Down, Qt.Key.Key_PageUp, Qt.Key.Key_PageDown, 
+                  Qt.Key.Key_Home, Qt.Key.Key_End):
             self.completer.popup().hide()
             super().keyPressEvent(event)
             return
@@ -302,6 +331,16 @@ class CodeEditor(QPlainTextEdit):
         # Ctrl+/ to toggle comments
         if event.key() == Qt.Key.Key_Slash and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             self.toggle_comment()
+            return
+
+        # Ctrl+Shift+[ to toggle fold at current block
+        if (event.modifiers() & Qt.KeyboardModifier.ControlModifier) and (event.modifiers() & Qt.KeyboardModifier.ShiftModifier) and event.key() == Qt.Key.Key_BracketLeft:
+            self.toggle_fold_current_block()
+            return
+
+        # Ctrl+Shift+] to unfold current block explicitly
+        if (event.modifiers() & Qt.KeyboardModifier.ControlModifier) and (event.modifiers() & Qt.KeyboardModifier.ShiftModifier) and event.key() == Qt.Key.Key_BracketRight:
+            self.toggle_fold_current_block(unfold_only=True)
             return
         
         # Ctrl++ or Ctrl+= to increase font size
@@ -389,9 +428,41 @@ class CodeEditor(QPlainTextEdit):
         self.hover_timer.start()
     
     def _show_hover_tooltip(self):
-        """Show hover tooltip if mouse is over a word."""
-        if self.hover_pos:
-            show_hover_tooltip(self, type('Event', (), {'pos': lambda: self.hover_pos})())
+        """Show hover tooltip if mouse is over a word or diagnostic marker in the gutter."""
+        if not self.hover_pos:
+            return
+        pos = self.hover_pos
+        # If hovering over the line number area, show diagnostic tooltip if present
+        if pos.x() <= self.line_number_area_width():
+            # Find block under y
+            y = pos.y()
+            block = self.firstVisibleBlock()
+            block_number = block.blockNumber()
+            top = self.blockBoundingGeometry(block).translated(self.contentOffset()).top()
+            bottom = top + self.blockBoundingRect(block).height()
+            while block.isValid() and top <= y:
+                if block.isVisible() and bottom >= y:
+                    line_no = block_number + 1
+                    diags = self.diagnostics.get(line_no, [])
+                    if diags:
+                        # Compose tooltip text
+                        texts = [f"[{d.get('severity').upper()}] {d.get('message')}" for d in diags]
+                        tooltip = "\n".join(texts)
+                        global_pos = self.mapToGlobal(pos)
+                        QToolTip.showText(global_pos, tooltip, self)
+                        return
+                    break
+                block = block.next()
+                top = bottom
+                bottom = top + self.blockBoundingRect(block).height()
+                block_number += 1
+        # Fall back to original behavior (word hover)
+        class HoverEvent:
+            def __init__(self, pos):
+                self._pos = pos
+            def pos(self):
+                return self._pos
+        show_hover_tooltip(self, HoverEvent(pos))
     
     def contextMenuEvent(self, event):
         """Show context menu with custom actions."""
@@ -406,6 +477,10 @@ class CodeEditor(QPlainTextEdit):
         goto_def_action = QAction("Go to Definition", self)
         goto_def_action.triggered.connect(self.go_to_definition)
         menu.addAction(goto_def_action)
+
+        fold_action = QAction("Fold/Unfold Block (Ctrl+Shift+[)", self)
+        fold_action.triggered.connect(self.toggle_fold_current_block)
+        menu.addAction(fold_action)
         
         menu.exec(event.globalPos())
     
@@ -721,7 +796,7 @@ class CodeEditor(QPlainTextEdit):
         )
         
     def line_number_area_paint_event(self, event):
-        """Paint line numbers."""
+        """Paint line numbers and diagnostic markers in the gutter."""
         painter = QPainter(self.line_number_area)
         bg_color = self.settings.get("editor", "line_number_bg", "#F0F0F0")
         painter.fillRect(event.rect(), QColor(bg_color))
@@ -731,9 +806,13 @@ class CodeEditor(QPlainTextEdit):
         top = self.blockBoundingGeometry(block).translated(self.contentOffset()).top()
         bottom = top + self.blockBoundingRect(block).height()
         
+        marker_diameter = 8
+        marker_margin = 4
+
         while block.isValid() and top <= event.rect().bottom():
             if block.isVisible() and bottom >= event.rect().top():
-                number = str(block_number + 1)
+                line_no = block_number + 1
+                number = str(line_no)
                 fg_color = self.settings.get("editor", "line_number_fg", "#808080")
                 painter.setPen(QColor(fg_color))
                 painter.drawText(
@@ -741,7 +820,25 @@ class CodeEditor(QPlainTextEdit):
                     self.fontMetrics().height(),
                     Qt.AlignmentFlag.AlignRight, number
                 )
-                
+                # Draw diagnostic marker if present
+                diags = self.diagnostics.get(line_no, [])
+                if diags:
+                    # Choose highest severity
+                    sev_priority = {"error": 3, "warning": 2, "info": 1}
+                    highest = sorted(diags, key=lambda d: sev_priority.get(d.get('severity','info'), 0), reverse=True)[0]
+                    sev = highest.get('severity', 'info')
+                    if sev == 'error':
+                        color = QColor('#A2142F')
+                    elif sev == 'warning':
+                        color = QColor('#EDB120')
+                    else:
+                        color = QColor('#0072BD')
+                    painter.setBrush(color)
+                    painter.setPen(QColor('#00000000'))
+                    cy = int(top + (self.blockBoundingRect(block).height() - marker_diameter) / 2)
+                    cx = marker_margin
+                    painter.drawEllipse(cx, cy, marker_diameter, marker_diameter)
+
             block = block.next()
             top = bottom
             bottom = top + self.blockBoundingRect(block).height()
@@ -765,6 +862,121 @@ class CodeEditor(QPlainTextEdit):
                 extra_selections.append(self._temp_highlight)
             
         self.setExtraSelections(extra_selections)
+
+    def _find_block_range(self, start_line: int) -> Optional[Tuple[int, int]]:
+        """Find the start/end line numbers for the block beginning at start_line."""
+        lines = self.toPlainText().split('\n')
+        if start_line < 1 or start_line > len(lines):
+            return None
+        line_text = lines[start_line - 1]
+        for start_pat, end_pat in self.block_pairs:
+            if start_pat.match(line_text):
+                depth = 1
+                for idx in range(start_line, len(lines)):
+                    ltxt = lines[idx]
+                    if start_pat.match(ltxt):
+                        depth += 1
+                    if end_pat.match(ltxt):
+                        depth -= 1
+                        if depth == 0:
+                            # idx is 0-based; convert to 1-based line number
+                            return (start_line, idx + 1)
+        return None
+
+    def toggle_fold_current_block(self, unfold_only: bool = False):
+        """Toggle folding for the block at the current cursor line."""
+        cursor = self.textCursor()
+        start_line = cursor.blockNumber() + 1
+        block_range = self._find_block_range(start_line)
+        if not block_range:
+            return
+        start, end = block_range
+        # Determine current folded state by checking visibility of the first inner block
+        inner_block = self.document().findBlockByNumber(start)  # start is 1-based
+        inner_block = inner_block.next()
+        currently_folded = inner_block.isValid() and not inner_block.isVisible()
+        fold = not currently_folded and not unfold_only
+        # Apply visibility to lines strictly inside the block, keep start/end visible
+        for line in range(start + 1, end):
+            block = self.document().findBlockByNumber(line - 1)
+            if block.isValid():
+                block.setVisible(not fold)
+                block.setLineCount(0 if fold else 1)
+        self.document().markContentsDirty(0, self.document().characterCount())
+        self.viewport().update()
+        self.update_line_number_area_width(0)
+
+    def set_diagnostics(self, diags: list):
+        """Set diagnostics for this editor.
+
+        diags: list of dicts with keys: file, line, col, severity, message
+        """
+        self.diagnostics = {}
+        for d in diags:
+            try:
+                ln = int(d.get('line', 0))
+            except Exception:
+                continue
+            if ln <= 0:
+                continue
+            self.diagnostics.setdefault(ln, []).append(d)
+        # Trigger repaint of gutter
+        self.line_number_area.update()
+
+    def diagnostics_at_pos(self, pos):
+        """Return diagnostics at a given editor-local QPoint (pos)."""
+        if pos.x() > self.line_number_area_width():
+            return []
+        y = pos.y()
+        block = self.firstVisibleBlock()
+        block_number = block.blockNumber()
+        top = self.blockBoundingGeometry(block).translated(self.contentOffset()).top()
+        bottom = top + self.blockBoundingRect(block).height()
+        while block.isValid() and top <= y:
+            if block.isVisible() and bottom >= y:
+                line_no = block_number + 1
+                return self.diagnostics.get(line_no, [])
+            block = block.next()
+            top = bottom
+            bottom = top + self.blockBoundingRect(block).height()
+            block_number += 1
+        return []
+
+    def on_gutter_click(self, pos):
+        """Handle a click in the gutter area: select corresponding problem in main window."""
+        diags = self.diagnostics_at_pos(pos)
+        if not diags:
+            return
+        diag = diags[0]
+        try:
+            # Ask the main window to focus the problem
+            mw = self.window()
+            if hasattr(mw, 'focus_problem'):
+                mw.focus_problem(diag)
+            else:
+                # Fallback: open problems panel and select matching top-level item
+                mw.problems_dock.setVisible(True)
+                mw.toggle_problems_action.setChecked(True)
+                for i in range(mw.problems_widget.topLevelItemCount()):
+                    item = mw.problems_widget.topLevelItem(i)
+                    d = item.data(0, Qt.ItemDataRole.UserRole)
+                    try:
+                        if d and int(d.get('line', 0)) == int(diag.get('line', 0)):
+                            mw.problems_widget.setCurrentItem(item)
+                            mw.problems_widget.scrollToItem(item)
+                            mw.problems_widget.setFocus()
+                            break
+                    except Exception:
+                        continue
+        except Exception:
+            pass
+
+
+    def clear_diagnostics(self):
+        """Clear diagnostics and update gutter."""
+        self.diagnostics = {}
+        self.line_number_area.update()
+
 
     def highlight_line(self, line_number: int, duration_ms: int = 3000):
         """Temporarily highlight a specific line for visual guidance."""

@@ -1,7 +1,7 @@
-"""VB2Arduino - VB6-like language transpiler for Arduino C++."""
+def main():
+	pass
 
-__version__ = "0.1.0"
+# Expose transpile_string for IDE and CLI
+from .transpiler import transpile_string
 
-from vb2arduino.transpiler import VBTranspiler, transpile_string
 
-__all__ = ["VBTranspiler", "transpile_string", "__version__"]
