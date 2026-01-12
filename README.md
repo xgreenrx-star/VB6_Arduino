@@ -100,6 +100,31 @@ See [BUILD.md](BUILD.md) for instructions on building standalone executables wit
   pip install platformio
   ```
 
+## Running Tests (headless)
+
+The project includes headless editor tests that exercise UI features (snippets, auto-indent, completer, find/replace). These tests require a display server; the simplest way to run them locally on Linux is with Xvfb.
+
+- Install Xvfb (Ubuntu/Debian):
+
+```bash
+sudo apt-get update
+sudo apt-get install -y xvfb
+```
+
+- Run all tests (headless):
+
+```bash
+xvfb-run -s "-screen 0 1280x720x24" python -m unittest discover -v -s tests
+```
+
+- Run a single test module:
+
+```bash
+xvfb-run -s "-screen 0 1280x720x24" python -m unittest tests.test_editor_snippets -v
+```
+
+The GitHub Actions workflow `.github/workflows/editor-tests.yml` runs this suite automatically on PRs and pushes to main/master.
+
 ## Quick Start
 
 ### Using the IDE (Recommended)
