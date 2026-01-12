@@ -16,6 +16,16 @@ htmlcov/
 
 # Ignore generated output
 generated/
+# Ignore generated example/build outputs and platformio artifacts
+generated_*/
+generated* 
+# PlatformIO / build artifacts
+.pio/
+*.pio
+
+# Virtual env used for local dev
+.venv/
+venv/
 
 # IDE
 .vscode/
