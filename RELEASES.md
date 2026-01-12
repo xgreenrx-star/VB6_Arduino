@@ -75,6 +75,10 @@ See [BUILD.md](../BUILD.md) for details.
 
 ## Version History
 
+- **Unreleased** (Jan 11, 2026)
+  - IDE: Added **Diagnostics & Quick Fixes** — on-demand linter, Problems panel, inline gutter markers, and single-click quick fixes (e.g., remove debug-draw)
+  - IDE: Added **Go to Definition (F12)** and **Find References (Shift+F12)** across open tabs
+
 - **v0.05** (Dec 24, 2025) — Beta release with PyInstaller builds
   - VB6 transpiler with Arduino C++ output
   - PyQt6 GUI IDE

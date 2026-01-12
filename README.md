@@ -225,6 +225,17 @@ The VB2Arduino IDE provides an Arduino IDE-like experience:
 - **Error Copy**: Right-click to copy single error or all errors to clipboard
 - **Status Hints**: Concise error summary shown when navigating to errors
 
+#### Diagnostics & Quick Fixes ✅
+- **On-demand Linter**: Run the built-in lightweight linter (Tools → Run Linter or `Ctrl+L`) to detect issues such as debug-draw calls, wildcard imports, and suspicious baud literals.
+- **Problems Panel**: Linter results appear in the Problems panel with inline gutter markers and hover tooltips.
+- **Quick Fixes**: Right-click a problem or use **Tools → Apply Quick Fix** (`Ctrl+.`) to apply an available fix (for example, remove or comment out a debug draw line). The editor updates and the linter re-runs automatically.
+
+#### Go To Definition & Find References 🔎
+- **Go to Definition (F12)**: Place the cursor on a procedure/function name and press **F12** to jump to its definition in any open tab.
+- **Find References (Shift+F12)**: Locate all references to the current symbol across open tabs and view the results in a quick dialog for one-click navigation.
+
+These features improve developer productivity for refactoring and quick fixes without leaving the IDE.
+
 ## Command-Line Options
 
 ```
