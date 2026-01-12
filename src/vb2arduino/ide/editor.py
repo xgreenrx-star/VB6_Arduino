@@ -327,7 +327,46 @@ class CodeEditor(QPlainTextEdit):
             self.completer.popup().hide()
             super().keyPressEvent(event)
             return
-        
+        # When '(' is typed, show signature help if available
+        if event.text() == '(':
+            super().keyPressEvent(event)
+            # Defer to signature helper
+            try:
+                self._show_signature_help()
+            except Exception:
+                pass
+            return
+
+    def format_document(self):
+        """Format the document with simple VB-style indentation rules.
+
+        Rules (simple heuristic):
+        - Increase indent after block starters: SUB, FUNCTION, IF..THEN (block), FOR, WHILE, DO, SELECT, WITH, FOR EACH
+        - Decrease indent on END/ELSE/ELSEIF/NEXT/WEND/LOOP/END IF
+        - Use 4 spaces per indent level
+        """
+        lines = self.toPlainText().splitlines()
+        out_lines = []
+        indent = 0
+        for raw in lines:
+            s = raw.strip()
+            if not s:
+                out_lines.append("")
+                continue
+            up = s.upper()
+            # Decrease before printing for end-like tokens
+            if up.startswith("END") or up in ("ELSE",) or up.startswith("ELSEIF") or up.startswith("NEXT") or up == "WEND" or up.startswith("LOOP"):
+                indent = max(0, indent - 1)
+            out_lines.append((" " * 4 * indent) + s)
+            # Increase after printing for block starters (avoid single-line IF)
+            if up.startswith("SUB ") or up.startswith("FUNCTION ") or up.startswith("FOR ") or up.startswith("WHILE ") or up.startswith("DO ") or up.startswith("SELECT ") or up.startswith("WITH ") or up.startswith("FOR EACH "):
+                indent += 1
+            elif up.startswith("IF ") and " THEN" in up and not re.match(r"IF\s+.+\s+THEN\s+.+", s, re.IGNORECASE):
+                # block IF (multi-line) e.g., IF cond THEN (newline) ... END IF
+                indent += 1
+        new_text = "\n".join(out_lines) + ("\n" if self.toPlainText().endswith("\n") else "")
+        self.setPlainText(new_text)
+        return new_text        
         # Ctrl+/ to toggle comments
         if event.key() == Qt.Key.Key_Slash and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             self.toggle_comment()
@@ -630,7 +669,8 @@ class CodeEditor(QPlainTextEdit):
         all_completions = list(self.base_completions)
         
         # Add procedure names (without Sub/Function prefix for completion)
-        for proc_name, _ in self.procedures:
+        for proc in self.procedures:
+            proc_name = proc[0]
             # Extract just the name part
             name = proc_name.split()[-1] if ' ' in proc_name else proc_name
             if name not in all_completions:
@@ -664,33 +704,29 @@ class CodeEditor(QPlainTextEdit):
         text = self.toPlainText()
         lines = text.split('\n')
         
-        # Regex patterns for Sub and Function declarations
-        sub_pattern = re.compile(r'^\s*Sub\s+(\w+)', re.IGNORECASE)
-        func_pattern = re.compile(r'^\s*Function\s+(\w+)', re.IGNORECASE)
+        # Regex patterns for Sub and Function declarations (capture params)
+        sub_pattern = re.compile(r'^\s*Sub\s+(\w+)\s*(?:\((.*?)\))?', re.IGNORECASE)
+        func_pattern = re.compile(r'^\s*Function\s+(\w+)\s*(?:\((.*?)\))?', re.IGNORECASE)
         
         for i, line in enumerate(lines):
             # Skip comments
             if line.strip().startswith("'"):
                 continue
-                
+            
             # Check for Sub declaration
             match = sub_pattern.match(line)
             if match:
                 proc_name = match.group(1)
-                self.procedures.append((f"Sub {proc_name}", i + 1))  # +1 for 1-based line numbers
+                params = match.group(2) or ''
+                self.procedures.append((f"Sub {proc_name}", i + 1, params))  # +1 for 1-based line numbers
                 continue
-                
+            
             # Check for Function declaration
             match = func_pattern.match(line)
             if match:
                 proc_name = match.group(1)
-                self.procedures.append((f"Function {proc_name}", i + 1))
-                
-        # Notify any connected procedure combo that the list has changed
-        if hasattr(self, 'procedure_combo'):
-            self.update_procedure_combo()
-            
-    def update_procedure_combo(self):
+                params = match.group(2) or ''
+                self.procedures.append((f"Function {proc_name}", i + 1, params))
         """Update the procedure combo box with current procedures."""
         if not hasattr(self, 'procedure_combo'):
             return
@@ -705,7 +741,9 @@ class CodeEditor(QPlainTextEdit):
         self.procedure_combo.clear()
         self.procedure_combo.addItem("(General)", 0)
         
-        for proc_name, line_num in self.procedures:
+        for proc in self.procedures:
+            proc_name = proc[0]
+            line_num = proc[1]
             self.procedure_combo.addItem(proc_name, line_num)
             
         # Try to restore previous selection
@@ -731,6 +769,30 @@ class CodeEditor(QPlainTextEdit):
             self.centerCursor()
             self.setFocus()
 
+    def get_procedure_signature(self, name: str) -> str | None:
+        """Return the parameter signature string for a procedure name if found."""
+        for proc in self.procedures:
+            pname = proc[0].split()[-1]
+            if pname.lower() == name.lower():
+                params = proc[2] if len(proc) > 2 else ''
+                return f"{pname}({params})" if params else f"{pname}()"
+        return None
+
+    def _show_signature_help(self):
+        """Show a small tooltip with the signature for the procedure whose name is before cursor."""
+        name = self.text_under_cursor()
+        if not name:
+            return
+        sig = self.get_procedure_signature(name)
+        if not sig:
+            return
+        # Show a tooltip at cursor
+        try:
+            pt = self.cursorRect()
+            from PyQt6.QtWidgets import QToolTip
+            QToolTip.showText(self.mapToGlobal(pt.bottomRight()), sig, self)
+        except Exception:
+            pass
         
     def apply_colors(self):
         """Apply color scheme from settings."""

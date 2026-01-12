@@ -830,6 +830,16 @@ class MainWindow(QMainWindow):
         replace_action.setShortcut("Ctrl+H")
         replace_action.triggered.connect(self.show_replace_dialog)
         edit_menu.addAction(replace_action)
+        # Format document
+        format_action = QAction("Format Document", self)
+        format_action.setShortcut("Ctrl+Alt+F")
+        format_action.triggered.connect(lambda: self.get_current_editor() and self.get_current_editor().format_document())
+        edit_menu.addAction(format_action)
+        # Rename symbol (refactor)
+        rename_action = QAction("Rename Symbol...", self)
+        rename_action.setShortcut("F2")
+        rename_action.triggered.connect(self.rename_symbol_action)
+        edit_menu.addAction(rename_action)
         
         edit_menu.addSeparator()
         comment_action = QAction("Toggle &Comment", self)
@@ -1402,6 +1412,42 @@ class MainWindow(QMainWindow):
         except Exception:
             pass
 
+
+    def rename_symbol_action(self):
+        """Prompt for a new symbol name and apply rename across open tabs."""
+        try:
+            editor = self.get_current_editor()
+            if not editor:
+                self.status.showMessage("No active editor", 2000)
+                return
+            symbol = editor.text_under_cursor().strip()
+            if not symbol:
+                self.status.showMessage("No symbol under cursor", 2000)
+                return
+            from PyQt6.QtWidgets import QInputDialog
+            new, ok = QInputDialog.getText(self, "Rename Symbol", f"Rename '{symbol}' to:")
+            if not ok or not new:
+                return
+            # Apply rename across all open tabs (simple textual replace with word boundaries)
+            import re
+            pattern = re.compile(rf"\b{re.escape(symbol)}\b")
+            for i in range(self.tab_widget.count()):
+                tab = self.tab_widget.widget(i)
+                if not hasattr(tab, 'editor'):
+                    continue
+                ed = tab.editor
+                txt = ed.toPlainText()
+                new_txt = pattern.sub(new, txt)
+                if new_txt != txt:
+                    ed.setPlainText(new_txt)
+            # Re-run linter and update UI
+            try:
+                self.run_linter()
+            except Exception:
+                pass
+            self.status.showMessage(f"Renamed '{symbol}' to '{new}'", 3000)
+        except Exception as e:
+            QMessageBox.warning(self, "Rename Symbol", f"Failed to rename symbol: {e}")
 
     def toggle_explorer(self, checked):
         """Show or hide the project explorer (tree view) window."""

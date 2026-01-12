@@ -30,6 +30,8 @@ class VBTranspiler:
         self.function_lines = []
         self.function_signatures = []  # For forward declarations
         self.block_stack = []
+        # Lines to skip (used when consuming multi-line custom blocks like Every ... End Do)
+        self._skip_lines = set()
         self.includes = set()
         self.current_function = None
         self.pointer_vars = set()
@@ -43,6 +45,9 @@ class VBTranspiler:
         self.select_expr = ""  # Track current select case expression
         self.in_case_block = False  # Track if we're inside a case block (for break statements)
         self.with_object = None  # Track object in With block
+        # Every-timer tasks
+        self.every_tasks = []
+        self._every_counter = 0
 
     def transpile(self, source: str) -> TranspileResult:
         # --- Line continuation: join lines ending with _
@@ -91,6 +96,9 @@ class VBTranspiler:
         global_dim_vars = set()
         # Track VB source line numbers for error mapping
         for vb_line_no, raw in enumerate(source.splitlines(), start=1):
+            # Skip lines consumed by multi-line block handlers
+            if vb_line_no in getattr(self, '_skip_lines', set()):
+                continue
             line = raw.strip()
             if not line or line.startswith("'") or line.upper().startswith("REM"):
                 continue
@@ -188,6 +196,9 @@ class VBTranspiler:
                         name = m2.group(1)
                         if name not in new_debug_vars:
                             continue
+                        # Skip emitting a local declaration if a global Dim already exists
+                        if current in ("setup", "loop") and name in global_dim_vars:
+                            continue
                         stmt_var = self._emit_dim(f"DIM {var_decl}")
                         if not stmt_var:
                             continue
@@ -206,6 +217,61 @@ class VBTranspiler:
                 continue
             if upper.startswith("SUB SETUP"):
                 current = "setup"
+                continue
+            # --- Every timer block: Every <ms> Do ... End Do ---
+            m_every = re.match(r"^EVERY\s+(.+?)\s+DO\s*$", line, re.IGNORECASE)
+            if m_every:
+                interval_expr = m_every.group(1)
+                # Collect block lines until matching END DO
+                src_lines = source.splitlines()
+                j = vb_line_no
+                collecting = []
+                while j < len(src_lines):
+                    nxt = src_lines[j].strip()
+                    if re.match(r"^END\s+DO\s*$", nxt, re.IGNORECASE):
+                        break
+                    collecting.append(nxt)
+                    j += 1
+                # Mark lines as consumed (so outer loop will skip them)
+                for k in range(vb_line_no + 1, j + 1):
+                    getattr(self, '_skip_lines', set()).add(k)
+                # Generate a helper function using a fresh transpiler instance
+                self._every_counter += 1
+                eid = self._every_counter
+                func_name = f"_every_task_{eid}"
+                tmp_src = "Sub " + func_name + "()\n" + "\n".join(collecting) + "\nEnd Sub\n"
+                tmp = VBTranspiler()
+                tmp_res = tmp.transpile(tmp_src)
+                cpp = tmp_res.cpp
+                # Extract function body if possible
+                import re as _re
+                m_func = _re.search(r"void\s+" + _re.escape(func_name) + r"\s*\((.*?)\)\s*\{", cpp, _re.S)
+                func_text = None
+                if m_func:
+                    start = m_func.start()
+                    brace = cpp.find('{', m_func.end()-1)
+                    cnt = 1
+                    i2 = brace + 1
+                    while i2 < len(cpp) and cnt > 0:
+                        if cpp[i2] == '{': cnt += 1
+                        elif cpp[i2] == '}': cnt -= 1
+                        i2 += 1
+                    func_text = cpp[start:i2]
+                # Add tracking variable and function (or comment)
+                self.global_lines.append(f"unsigned long _every_last_{eid} = 0;")
+                if func_text:
+                    self.function_lines.append(func_text)
+                else:
+                    self.function_lines.append(f"// TODO: Failed to generate every-task {func_name} starting at line {vb_line_no}")
+                # Add runtime check in the loop
+                try:
+                    interval_cpp = self._expr(interval_expr)
+                except Exception:
+                    interval_cpp = interval_expr
+                self.loop_lines.append(f"if (millis() - _every_last_{eid} >= {interval_cpp}) {{")
+                self.loop_lines.append(f"    _every_last_{eid} = millis();")
+                self.loop_lines.append(f"    {func_name}();")
+                self.loop_lines.append("}")
                 continue
             if upper.startswith("SUB LOOP"):
                 current = "loop"

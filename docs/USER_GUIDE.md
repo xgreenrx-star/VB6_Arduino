@@ -94,6 +94,42 @@ vb2arduino input.vb --out generated --board esp32-s3-devkitm-1 --build --upload 
 
 ## 5. VB Language Reference (subset used here)
 
+### New constructs (added)
+- `Every <ms> Do ... End Do` — non-blocking periodic task that executes the block approximately every `<ms>` milliseconds. Example:
+
+```
+Every 1000 Do
+    SerialPrintLine "tick"
+End Do
+```
+
+- `Enum` support — define named constants:
+```
+Enum Colors
+    RED = 1
+    BLUE
+End Enum
+```
+
+- `For Each <item> In <array>` — iterate arrays easily:
+```
+For Each x In arr
+    SerialPrint x
+Next
+```
+
+- Sprite methods: `CREATE_SPRITE name, w, h`, `SPRITE_FILL_ELLIPSE name, x, y, rx, ry, color`, `SPRITE_PUSH name, x, y[, bg]`, `SPRITE_DELETE name` (use sprite delete to free resources).
+
+- Linter suppression: add a comment on the line above a statement to suppress a rule:
+```
+' LINTER:DISABLE blocking-delay
+Delay 1000
+```
+
+These features help write non-blocking MCU-friendly code and improve code clarity.
+
+## 5. VB Language Reference (subset used here)
+
 ### Entry Points
 - `Sub Setup()` → `void setup()`
 - `Sub Loop()` → `void loop()`
