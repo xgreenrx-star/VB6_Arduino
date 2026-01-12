@@ -1,7 +1,3 @@
-"""Main window for Asic (Arduino Basic) IDE.
-
-This IDE supports Asic (Arduino Basic) language, macro commands (e.g., {{KEY:...}}, {{DELAY:...}}), and full PlatformIO integration for Arduino/ESP32 development.
-"""
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QSplitter,
@@ -16,15 +12,16 @@ import subprocess
 import tempfile
 import re
 
+from vb2arduino.ide.pin_diagram_overlay import PinDiagramOverlay
 from vb2arduino.ide.editor import CodeEditorWidget
 from vb2arduino.ide.serial_monitor import SerialMonitor
+from vb2arduino.ide.serial_plotter import SerialPlotter
 from vb2arduino.ide.project_tree import ProjectTreeView
 from vb2arduino.ide.utils import (
     get_available_ports,
     get_platformio_boards,
     auto_detect_board_and_port,
 )
-
 from vb2arduino.ide.settings import Settings
 from vb2arduino.ide.settings_dialog import SettingsDialog
 from vb2arduino.ide.libraries_dialog import LibrariesDialog
@@ -33,10 +30,85 @@ from vb2arduino.ide.pin_configuration_dialog import PinConfigurationDialog
 from vb2arduino.ide.pin_templates import get_template_for_board
 from vb2arduino.ide.project_config import ProjectConfig
 from vb2arduino.ide.programmers_reference_dialog import ProgrammersReferenceDialog
+from vb2arduino.ide.shortcuts_help_dialog import ShortcutsHelpDialog
+from vb2arduino.ide.find_replace_dialog import FindReplaceDialog
 from vb2arduino import transpile_string
+
+"""Main window for Asic (Arduino Basic) IDE.
+
+This IDE supports Asic (Arduino Basic) language, macro commands (e.g., {{KEY:...}}, {{DELAY:...}}), and full PlatformIO integration for Arduino/ESP32 development.
+"""
 
 
 class MainWindow(QMainWindow):
+    def show_shortcuts_help(self):
+        dlg = ShortcutsHelpDialog(self)
+        dlg.exec()
+
+    def show_pin_diagram_overlay(self):
+        """Show or raise the pin diagram overlay window."""
+        board = self.board_combo.currentData()
+        if not self.pin_diagram_overlay:
+            self.pin_diagram_overlay = PinDiagramOverlay(self, board=board)
+        else:
+            self.pin_diagram_overlay.set_board(board)
+        self.pin_diagram_overlay.show()
+        self.pin_diagram_overlay.raise_()
+
+    def _connect_editor_signals(self):
+        editor = self.get_current_editor()
+        if editor:
+            try:
+                editor.cursorPositionChanged.disconnect(self.update_status_bar)
+            except Exception:
+                pass
+            editor.cursorPositionChanged.connect(self.update_status_bar)
+            self.update_status_bar()
+
+    def update_status_bar(self):
+        # Update line/col
+        editor = self.get_current_editor()
+        if editor:
+            cursor = editor.textCursor()
+            line = cursor.blockNumber() + 1
+            col = cursor.positionInBlock() + 1
+            self.status_linecol.setText(f"Ln {line}, Col {col}")
+        else:
+            self.status_linecol.setText("")
+        # Encoding (fixed for now)
+        self.status_encoding.setText("UTF-8")
+        # Board/port
+        board = self.board_combo.currentText() if hasattr(self, 'board_combo') else ""
+        port = self.port_combo.currentText() if hasattr(self, 'port_combo') else ""
+        self.status_board.setText(f"Board: {board}" if board else "")
+        self.status_port.setText(f"Port: {port}" if port else "")
+
+    def show_serial_plotter(self):
+        if hasattr(self, 'serial_monitor') and self.serial_monitor:
+            self.serial_monitor.show_plotter()
+        else:
+            # fallback: create a standalone plotter
+            if not hasattr(self, '_standalone_plotter'):
+                self._standalone_plotter = SerialPlotter(self)
+            self._standalone_plotter.show()
+
+    def apply_settings(self):
+        """Apply settings after dialog is accepted (auto-save, font, etc)."""
+        self.auto_save_enabled = self.settings.get("editor", "auto_save_enabled", False)
+        self.auto_save_interval = self.settings.get("editor", "auto_save_interval", 30)
+        if self.auto_save_enabled:
+            self.auto_save_timer.start(self.auto_save_interval * 1000)
+        else:
+            self.auto_save_timer.stop()
+
+    def _auto_save_tick(self):
+        editor = self.get_current_editor()
+        if not editor or not editor.is_modified():
+            return
+        # Only save if file path is known
+        if self.current_file:
+            self._save_to_file(self.current_file)
+            self.status.showMessage(f"[Auto-saved] {self.current_file}", 2000)
     def get_current_editor(self):
         """Return the current CodeEditorWidget in the active tab, or None."""
         if hasattr(self, 'tab_widget') and self.tab_widget.count() > 0:
@@ -46,6 +118,7 @@ class MainWindow(QMainWindow):
                 return widget.editor
         return None
     def __init__(self):
+        self.pin_diagram_overlay = None
         super().__init__()
         self.settings = Settings()
         self.project_config = ProjectConfig()  # Load project configuration
@@ -53,6 +126,9 @@ class MainWindow(QMainWindow):
         self.is_modified = False
         self.build_output_dir = pathlib.Path(tempfile.gettempdir()) / "asic_build"
         self.selected_libraries = []  # Track selected libraries
+        self.recent_files = self.settings.get("editor", "recent_files", [])
+        self.max_recent_files = 10
+        self.find_dialog = None
         self.board_platforms = {
             # ESP32 boards
             "esp32-s3-devkitm-1": "espressif32",
@@ -76,14 +152,30 @@ class MainWindow(QMainWindow):
             "pico": "raspberrypi",
             "nanorp2040connect": "raspberrypi",
         }
+        # Auto-save
+        self.auto_save_enabled = self.settings.get("editor", "auto_save_enabled", False)
+        self.auto_save_interval = self.settings.get("editor", "auto_save_interval", 30)  # seconds
+        self.auto_save_timer = QTimer(self)
+        self.auto_save_timer.timeout.connect(self._auto_save_tick)
+        if self.auto_save_enabled:
+            self.auto_save_timer.start(self.auto_save_interval * 1000)
         self.init_ui()
 
     def init_ui(self):
-        print("[DEBUG] init_ui called")
+        # Initialize UI elements
         # Status bar (initialize first)
         self.status = QStatusBar()
         self.setStatusBar(self.status)
         self.status.showMessage("Ready")
+        # Add status widgets
+        self.status_linecol = QLabel("Ln 1, Col 1")
+        self.status_encoding = QLabel("UTF-8")
+        self.status_board = QLabel("")
+        self.status_port = QLabel("")
+        self.status.addPermanentWidget(self.status_linecol)
+        self.status.addPermanentWidget(self.status_encoding)
+        self.status.addPermanentWidget(self.status_board)
+        self.status.addPermanentWidget(self.status_port)
 
         # Create toolbar FIRST so board_combo is available
         self.create_toolbar()
@@ -111,6 +203,9 @@ class MainWindow(QMainWindow):
         self.tab_widget.tabCloseRequested.connect(self.close_tab)
         self.tab_widget.currentChanged.connect(self.on_tab_changed)
         self.h_splitter.addWidget(self.tab_widget)
+
+        # Connect editor cursor movement to status bar update
+        self.tab_widget.currentChanged.connect(lambda idx: self._connect_editor_signals())
 
         # Add horizontal splitter (explorer/editor) to vertical splitter
         self.v_splitter.addWidget(self.h_splitter)
@@ -180,16 +275,7 @@ class MainWindow(QMainWindow):
 
 
 
-        # Status bar
-        self.status = QStatusBar()
-        self.setStatusBar(self.status)
-        self.status.showMessage("Ready")
 
-        # Create menu bar
-        self.create_menus()
-
-        # Load default template
-        self.load_template()
 
     def load_file_on_startup(self, file_path):
         """Load a file when the application starts (called from command line)."""
@@ -261,6 +347,11 @@ class MainWindow(QMainWindow):
         self.tab_widget.addTab(editor_widget, tab_title)
         self.tab_widget.setCurrentWidget(editor_widget)
         editor.textChanged.connect(self.on_text_changed)
+        # Connect dirty file indicator
+        editor.modified_changed.connect(lambda modified: self.on_editor_modified_changed(editor_widget, modified))
+        # Connect status bar updates
+        editor.cursorPositionChanged.connect(self.update_status_bar)
+        self.update_status_bar()
         self._update_selected_libraries_from_editor(editor_widget)
         if path and str(path).endswith((".vb", ".bas")):
             self.current_file = pathlib.Path(path)
@@ -370,6 +461,7 @@ class MainWindow(QMainWindow):
         toolbar = QToolBar("Main Toolbar")
         toolbar.setMovable(False)
         self.addToolBar(toolbar)
+        self.main_toolbar = toolbar
 
         # Track auto-detected marks to revert labels on manual change
         self._auto_board_mark_idx = None
@@ -378,16 +470,18 @@ class MainWindow(QMainWindow):
         self._port_original_text = {}
         
         # Compile button (was Verify)
-        verify_btn = QPushButton("✓ Compile")
-        verify_btn.setToolTip("Compile (Ctrl+R)")
-        verify_btn.clicked.connect(self.verify_code)
-        toolbar.addWidget(verify_btn)
+        self.verify_btn = QPushButton("✓ Compile")
+        self.verify_btn.setToolTip("Compile (Ctrl+R)")
+        self.verify_btn.setMaximumWidth(110)
+        self.verify_btn.clicked.connect(self.verify_code)
+        toolbar.addWidget(self.verify_btn)
         
         # Upload button  
-        upload_btn = QPushButton("→ Upload")
-        upload_btn.setToolTip("Compile and Upload (Ctrl+U)")
-        upload_btn.clicked.connect(self.upload_code)
-        toolbar.addWidget(upload_btn)
+        self.upload_btn = QPushButton("→ Upload")
+        self.upload_btn.setToolTip("Compile and Upload (Ctrl+U)")
+        self.upload_btn.setMaximumWidth(110)
+        self.upload_btn.clicked.connect(self.upload_code)
+        toolbar.addWidget(self.upload_btn)
         
         toolbar.addSeparator()
         
@@ -431,13 +525,15 @@ class MainWindow(QMainWindow):
             self.board_combo.addItem(f"--- {category} ---", None)
             for display_name, board_id in board_list:
                 self.board_combo.addItem(display_name, board_id)
-        
-        self.board_combo.setMinimumWidth(250)
+        self.board_combo.setMinimumWidth(160)
+        self.board_combo.setMaximumWidth(220)
         toolbar.addWidget(self.board_combo)
         # Clear [Auto] badge when user changes selection
         self.board_combo.currentIndexChanged.connect(self._clear_board_auto_mark)
         # Load pin template when board changes
         self.board_combo.currentIndexChanged.connect(self._on_board_changed)
+        self.board_combo.currentIndexChanged.connect(self._on_board_combo_pin_diagram_update)
+
         # Persistent chip indicating auto-detection
         self.board_auto_chip = QLabel("Auto")
         self.board_auto_chip.setVisible(False)
@@ -446,14 +542,15 @@ class MainWindow(QMainWindow):
             "padding:1px 4px;font-size:10px;border:1px solid #CDE9D6;}"
         )
         toolbar.addWidget(self.board_auto_chip)
-        
+
         toolbar.addSeparator()
-        
+
         # Port selection
         toolbar.addWidget(QLabel("Port: "))
         self.port_combo = QComboBox()
         self.refresh_ports()
-        self.port_combo.setMinimumWidth(150)
+        self.port_combo.setMinimumWidth(100)
+        self.port_combo.setMaximumWidth(160)
         toolbar.addWidget(self.port_combo)
         # Clear [Auto] badge when user changes selection and update serial monitor
         self.port_combo.currentIndexChanged.connect(self._clear_port_auto_mark)
@@ -466,21 +563,78 @@ class MainWindow(QMainWindow):
             "padding:1px 4px;font-size:10px;border:1px solid #CDE9D6;}"
         )
         toolbar.addWidget(self.port_auto_chip)
-        
+
         # Refresh ports button
         refresh_btn = QPushButton("↻")
         refresh_btn.setToolTip("Refresh ports")
+        refresh_btn.setMaximumWidth(40)
         refresh_btn.clicked.connect(self.refresh_ports)
         toolbar.addWidget(refresh_btn)
-        
+
         toolbar.addSeparator()
-        
+
         # Serial Monitor toggle
-        serial_btn = QPushButton("Serial Monitor")
+        serial_btn = QPushButton("Serial")
         serial_btn.setCheckable(True)
         serial_btn.setChecked(True)
+        serial_btn.setMaximumWidth(80)
         serial_btn.toggled.connect(self.toggle_serial_monitor)
         toolbar.addWidget(serial_btn)
+
+        # Overflow 'More' button (hidden by default)
+        from PyQt6.QtWidgets import QToolButton, QMenu
+        self._toolbar_more = QToolButton()
+        self._toolbar_more.setText("⋯")
+        self._toolbar_more.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self._toolbar_more_menu = QMenu()
+        # Add actions to mirror key toolbar controls
+        self._toolbar_more_menu.addAction("Toggle Serial Monitor", lambda: serial_btn.toggle())
+        self._toolbar_more_menu.addAction("Refresh Ports", refresh_btn.click)
+        self._toolbar_more_menu.addAction("Upload", self.upload_code)
+        self._toolbar_more_menu.addAction("Compile", self.verify_code)
+        self._toolbar_more.setMenu(self._toolbar_more_menu)
+        self._toolbar_more.setVisible(False)
+        toolbar.addWidget(self._toolbar_more)
+
+        # Track toolbar controls for responsive layout (now that all are created)
+        self._toolbar_controls = [self.verify_btn, self.upload_btn, self.board_combo, self.board_auto_chip, self.port_combo, self.port_auto_chip, refresh_btn, serial_btn]
+
+        # After toolbar setup, try auto-selecting detected board/port
+        self.auto_select_defaults()
+        # Responsive toolbar threshold
+        self._toolbar_responsive_threshold = 700
+
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        # Update responsive toolbar behavior
+        try:
+            w = self.width()
+            if w < self._toolbar_responsive_threshold:
+                # hide less important widgets and show overflow
+                for wgt in (self.board_auto_chip, self.port_auto_chip):
+                    wgt.setVisible(False)
+                if hasattr(self, '_toolbar_more'):
+                    self._toolbar_more.setVisible(True)
+                # reduce combo widths slightly for narrow layouts
+                self.board_combo.setMaximumWidth(200)
+                self.port_combo.setMaximumWidth(150)
+            else:
+                for wgt in (self.board_auto_chip, self.port_auto_chip):
+                    wgt.setVisible(True)
+                if hasattr(self, '_toolbar_more'):
+                    self._toolbar_more.setVisible(False)
+                self.board_combo.setMaximumWidth(260)
+                self.port_combo.setMaximumWidth(180)
+        except Exception:
+            pass
+
+    def _on_board_combo_pin_diagram_update(self):
+        if self.pin_diagram_overlay and self.pin_diagram_overlay.isVisible():
+            board = self.board_combo.currentData()
+            if not board:
+                board = self.board_combo.currentText().lower().replace(' ', '-')
+            self.pin_diagram_overlay.set_board(board)
 
         # After toolbar setup, try auto-selecting detected board/port
         self.auto_select_defaults()
@@ -507,6 +661,12 @@ class MainWindow(QMainWindow):
         save_as_action.setShortcut("Ctrl+Shift+S")
         save_as_action.triggered.connect(self.save_file_as)
         file_menu.addAction(save_as_action)
+        file_menu.addSeparator()
+        
+        # Recent Files submenu
+        self.recent_files_menu = file_menu.addMenu("Recent &Files")
+        self.update_recent_files_menu()
+        
         file_menu.addSeparator()
         quit_action = QAction("&Quit", self)
         quit_action.setShortcut("Ctrl+Q")
@@ -543,6 +703,23 @@ class MainWindow(QMainWindow):
         paste_action.setShortcut("Ctrl+V")
         paste_action.triggered.connect(lambda: self.get_current_editor() and self.get_current_editor().paste())
         edit_menu.addAction(paste_action)
+        edit_menu.addSeparator()
+        
+        find_action = QAction("&Find...", self)
+        find_action.setShortcut("Ctrl+F")
+        find_action.triggered.connect(self.show_find_dialog)
+        edit_menu.addAction(find_action)
+        
+        replace_action = QAction("&Replace...", self)
+        replace_action.setShortcut("Ctrl+H")
+        replace_action.triggered.connect(self.show_replace_dialog)
+        edit_menu.addAction(replace_action)
+        
+        edit_menu.addSeparator()
+        comment_action = QAction("Toggle &Comment", self)
+        comment_action.setShortcut("Ctrl+/")
+        comment_action.triggered.connect(lambda: self.get_current_editor() and self.get_current_editor().toggle_comment())
+        edit_menu.addAction(comment_action)
 
         # Sketch menu
         sketch_menu = menubar.addMenu("&Sketch")
@@ -559,17 +736,33 @@ class MainWindow(QMainWindow):
         libraries_action.triggered.connect(self.show_libraries)
         sketch_menu.addAction(libraries_action)
 
+
         # Tools menu
         tools_menu = menubar.addMenu("&Tools")
+        # Pin Diagram Overlay
+        pin_diagram_action = QAction("Show Pin Diagram", self)
+        pin_diagram_action.setShortcut("Ctrl+Alt+P")
+        pin_diagram_action.triggered.connect(self.show_pin_diagram_overlay)
+        tools_menu.addAction(pin_diagram_action)
+
         serial_action = QAction("Serial &Monitor", self)
         serial_action.setShortcut("Ctrl+Shift+M")
         serial_action.triggered.connect(lambda: self.serial_monitor.setVisible(not self.serial_monitor.isVisible()))
         tools_menu.addAction(serial_action)
+        plotter_action = QAction("Serial &Plotter", self)
+        plotter_action.setShortcut("Ctrl+Shift+P")
+        plotter_action.triggered.connect(self.show_serial_plotter)
+        tools_menu.addAction(plotter_action)
         libraries_action = QAction("Manage &Libraries... (Advanced Online Manager Available)", self)
         libraries_action.setShortcut("Ctrl+Shift+L")
         libraries_action.triggered.connect(self.show_libraries_manager)
         tools_menu.addAction(libraries_action)
         pins_action = QAction("Configure &Pins...", self)
+        # Shortcuts help
+        shortcuts_action = QAction("Keyboard Shortcuts...", self)
+        shortcuts_action.setShortcut("Ctrl+Q")
+        shortcuts_action.triggered.connect(self.show_shortcuts_help)
+        tools_menu.addAction(shortcuts_action)
         pins_action.setShortcut("Ctrl+Shift+P")
         pins_action.triggered.connect(self.show_pin_configuration)
         tools_menu.addAction(pins_action)
@@ -693,6 +886,9 @@ End Sub
             self.is_modified = False
             self.update_title()
             
+            # Add to recent files
+            self.add_to_recent_files(str(path))
+            
             # Save board and port selection for this file
             self.project_config.set_board_and_port(
                 self.board_combo.currentData(),
@@ -809,7 +1005,7 @@ End Sub
                 self.status.showMessage("✗ Compilation failed")
                 # Parse errors, map to VB lines, and show clickable list
                 vb_map = self._build_vb_line_map(cpp_file)
-                errors = self._parse_compile_errors(result.stderr, cpp_file.name)
+                errors = self._parse_compile_errors(result.stderr, cpp_file)
                 if errors:
                     if self.settings.get("editor", "show_compile_failure_popup", True):
                         self._show_compile_errors(errors, vb_map)
@@ -920,7 +1116,7 @@ End Sub
                 self.status.showMessage("✗ Upload failed")
                 # On compile/upload error, parse and present clickable errors
                 vb_map = self._build_vb_line_map(cpp_file)
-                errors = self._parse_compile_errors(result.stderr, cpp_file.name)
+                errors = self._parse_compile_errors(result.stderr, cpp_file)
                 if errors:
                     if self.settings.get("editor", "show_upload_failure_popup", True):
                         self._show_compile_errors(errors, vb_map)
@@ -1131,23 +1327,110 @@ End Sub
             vb_map[idx] = current_vb if current_vb is not None else 1
         return vb_map
 
-    def _parse_compile_errors(self, stderr: str, cpp_name: str) -> list[tuple[int, str, str]]:
+    def _parse_compile_errors(self, stderr: str, cpp_path: "pathlib.Path|str") -> list[tuple[int, str, str]]:
         """Parse compiler stderr to extract (cpp_line, level, message) for main file.
 
-        Matches lines like: src/main.cpp:123:45: error: message
-        Returns a list of tuples.
+        Handles common GCC/Clang formats including:
+          - <file>:<line>:<col>: <level>: <message>
+          - <file>:<line>: <level>: <message>
+        Also handles multi-line messages where the error line may be on the following
+        line (e.g., "error: redeclaration of 't'") by using the most recent file/line
+        context or by searching the generated C++ for a matching symbol when possible.
         """
         errors: list[tuple[int, str, str]] = []
+        # Normalize cpp_path to a pathlib.Path when possible so we can inspect the file.
+        try:
+            import pathlib as _pathlib
+            if isinstance(cpp_path, _pathlib.Path):
+                cpp_path_obj = cpp_path
+                cpp_name = cpp_path.name
+            else:
+                cpp_path_obj = None
+                cpp_name = str(cpp_path)
+        except Exception:
+            cpp_path_obj = None
+            cpp_name = str(cpp_path)
+
+        last_file = None
+        last_line = None
         for line in stderr.splitlines():
-            # General gcc/clang style: <file>:<line>:<col>: <level>: <message>
-            m = re.match(r"(.+?):(\d+):\d+:\s+(fatal error|error|warning):\s+(.*)", line)
+            # 1) Try file:line:col: format
+            m = re.match(r"(.+?):(\d+):(\d+):\s+(fatal error|error|warning):\s+(.*)", line)
+            if not m:
+                # 2) Try file:line: (no column)
+                m = re.match(r"(.+?):(\d+):\s+(fatal error|error|warning):\s+(.*)", line)
             if m:
-                file_path, line_no, level, msg = m.groups()
+                file_path, line_no, *_rest = m.groups()
+                # Last two groups are level and message in either case
+                if len(_rest) == 2:
+                    level, msg = _rest
+                else:
+                    level = _rest[0]
+                    msg = _rest[1] if len(_rest) > 1 else ""
+                last_file = file_path
+                try:
+                    last_line = int(line_no)
+                except Exception:
+                    last_line = None
+
+                # Only return errors that originate in the generated C++ main file
                 if file_path.endswith(cpp_name):
                     try:
-                        errors.append((int(line_no), level, msg))
-                    except ValueError:
+                        errors.append((int(line_no), level, msg, f"{file_path}:{line_no}", False))
+                    except Exception:
                         pass
+                else:
+                    # If the error points into another file, attempt to map it by
+                    # searching for the same symbol in our generated C++ file (best-effort).
+                    # This covers cases like "redeclaration of 't'" where the message doesn't
+                    # include a direct file:line reference into main.cpp.
+                    if cpp_path_obj and cpp_path_obj.exists():
+                        # Look for a token in the error message
+                        token_match = re.search(r"redeclaration of ['\"]?([A-Za-z0-9_]+)['\"]?", msg)
+                        if token_match:
+                            token = token_match.group(1)
+                            try:
+                                found = False
+                                for idx, l in enumerate(cpp_path_obj.read_text(encoding='utf-8').splitlines(), start=1):
+                                    if re.search(rf"\b(?:int|float|double|long|char|uint8_t|uint16_t|uint32_t)\s+{re.escape(token)}\b", l):
+                                        errors.append((idx, level, msg, f"{file_path}:{line_no}" if file_path and line_no else None, True))
+                                        found = True
+                                        break
+                                if not found:
+                                    # No declaration found, fall back to the last line reference
+                                    if last_line is not None:
+                                        errors.append((last_line, level, msg, f"{file_path}:{line_no}" if file_path and line_no else None, True))
+                            except Exception:
+                                pass
+                        else:
+                            # As a fallback, map to the last recognized line if any
+                            if last_line is not None:
+                                errors.append((last_line, level, msg, f"{file_path}:{line_no}" if file_path and line_no else None, True))
+            else:
+                # Handle continuation lines like: "error: redeclaration of 't'"
+                m2 = re.match(r"^\s*(fatal error|error|warning):\s+(.*)", line)
+                if m2 and last_file is not None:
+                    level, msg = m2.groups()
+                    if last_file.endswith(cpp_name) and last_line is not None:
+                        errors.append((last_line, level, msg, f"{last_file}:{last_line}", False))
+                    else:
+                        # Try to find token in generated C++ and map to its declaration
+                        token_match = re.search(r"redeclaration of ['\"]?([A-Za-z0-9_]+)['\"]?", msg)
+                        if token_match and cpp_path_obj and cpp_path_obj.exists():
+                            token = token_match.group(1)
+                            try:
+                                found = False
+                                for idx, l in enumerate(cpp_path_obj.read_text(encoding='utf-8').splitlines(), start=1):
+                                    if re.search(rf"\b(?:int|float|double|long|char|uint8_t|uint16_t|uint32_t)\s+{re.escape(token)}\b", l):
+                                        errors.append((idx, level, msg, f"{last_file}:{last_line}" if last_file and last_line else None, True))
+                                        found = True
+                                        break
+                                if not found and last_line is not None:
+                                    errors.append((last_line, level, msg, f"{last_file}:{last_line}" if last_file and last_line else None, True))
+                            except Exception:
+                                pass
+                        elif last_line is not None:
+                            errors.append((last_line, level, msg, f"{last_file}:{last_line}" if last_file and last_line else None, True))
         return errors
 
     def _show_compile_errors(self, errors: list[tuple[int, str, str]], vb_map: dict[int, int]):
@@ -1158,21 +1441,58 @@ End Sub
         lst = QListWidget(dlg)
         layout.addWidget(lst)
         # Populate list with VB line numbers and messages
-        for cpp_line, level, msg in errors:
-            vb_line = vb_map.get(cpp_line, 1)
-            item = QListWidgetItem(f"VB line {vb_line}: {level} - {msg}")
-            # store VB line and message in item data
-            item.setData(Qt.ItemDataRole.UserRole, (vb_line, level, msg))
+        for e in errors:
+            # Accept either old-style (cpp_line, level, msg) or new-style (cpp_line, level, msg, orig_ref, ambiguous)
+            if isinstance(e, tuple) and len(e) >= 5:
+                cpp_line, level, msg, orig_ref, ambiguous = e[:5]
+            elif isinstance(e, tuple) and len(e) == 3:
+                cpp_line, level, msg = e
+                orig_ref = None
+                ambiguous = False
+            else:
+                # Unexpected format: skip
+                continue
+
+            # Map cpp line to the closest VB marker: prefer exact match, otherwise
+            # use the nearest preceding marker so we don't default everything to line 1.
+            if cpp_line in vb_map:
+                vb_line = vb_map[cpp_line]
+            else:
+                keys = [k for k in vb_map.keys() if k <= cpp_line]
+                if keys:
+                    vb_line = vb_map[max(keys)]
+                    ambiguous = True
+                else:
+                    vb_line = vb_map.get(1, 1)
+                    ambiguous = True
+
+            label = f"VB line {vb_line}: {level} - {msg}"
+            if ambiguous:
+                if orig_ref:
+                    label += f" (approx, from {orig_ref})"
+                else:
+                    label += " (approx)"
+            item = QListWidgetItem(label)
+            # store VB line and message in item data (include orig_ref and ambiguous for richer details)
+            item.setData(Qt.ItemDataRole.UserRole, (vb_line, level, msg, orig_ref, ambiguous))
             lst.addItem(item)
 
         def on_item_activated(item: QListWidgetItem):
             data = item.data(Qt.ItemDataRole.UserRole)
-            if isinstance(data, tuple) and len(data) == 3:
-                vb_line, level, msg = data
+            # Expect (vb_line, level, msg, orig_ref, ambiguous) or legacy (vb_line, level, msg)
+            if isinstance(data, tuple) and len(data) >= 3:
+                vb_line = data[0]
+                level = data[1]
+                msg = data[2]
+                orig_ref = data[3] if len(data) >= 4 else None
+                ambiguous = data[4] if len(data) >= 5 else False
                 if isinstance(vb_line, int):
                     self.goto_line(vb_line)
-                    # Update status bar with concise hint
-                    self.status.showMessage(f"{level.capitalize()} at VB line {vb_line}: {msg}", 5000)
+                    # Update status bar with concise hint, include orig_ref when ambiguous
+                    if ambiguous and orig_ref:
+                        self.status.showMessage(f"{level.capitalize()} at VB line {vb_line} (from {orig_ref}): {msg}", 5000)
+                    else:
+                        self.status.showMessage(f"{level.capitalize()} at VB line {vb_line}: {msg}", 5000)
         
         # Context menu for copying error text
         def on_context_menu(pos):
@@ -1245,6 +1565,7 @@ End Sub
             editor = self.get_current_editor()
             if editor:
                 editor.apply_settings(self.settings)
+            self.apply_settings()
             self.status.showMessage("Settings applied", 2000)
     
     def show_libraries_manager(self):
@@ -1534,4 +1855,67 @@ End Sub
                 pass
             event.accept()
         else:
-            event.ignore()
+            event.ignore()    
+    def show_find_dialog(self):
+        """Show find dialog."""
+        editor = self.get_current_editor()
+        if not editor:
+            return
+        if not self.find_dialog:
+            self.find_dialog = FindReplaceDialog(editor, self)
+        else:
+            self.find_dialog.editor = editor
+        self.find_dialog.show()
+        self.find_dialog.find_edit.setFocus()
+    
+    def show_replace_dialog(self):
+        """Show find/replace dialog."""
+        self.show_find_dialog()  # Same dialog handles both
+    
+    def add_to_recent_files(self, filepath):
+        """Add file to recent files list."""
+        if filepath in self.recent_files:
+            self.recent_files.remove(filepath)
+        self.recent_files.insert(0, filepath)
+        self.recent_files = self.recent_files[:self.max_recent_files]
+        self.settings.set("editor", "recent_files", self.recent_files)
+        self.update_recent_files_menu()
+    
+    def update_recent_files_menu(self):
+        """Update the recent files menu."""
+        if not hasattr(self, 'recent_files_menu'):
+            return
+        self.recent_files_menu.clear()
+        if not self.recent_files:
+            action = self.recent_files_menu.addAction("(No recent files)")
+            action.setEnabled(False)
+            return
+        for filepath in self.recent_files:
+            if pathlib.Path(filepath).exists():
+                action = self.recent_files_menu.addAction(pathlib.Path(filepath).name)
+                action.setData(filepath)
+                action.triggered.connect(lambda checked, f=filepath: self.open_recent_file(f))
+    
+    def open_recent_file(self, filepath):
+        """Open a file from recent files."""
+        if pathlib.Path(filepath).exists():
+            self.load_file(pathlib.Path(filepath))
+        else:
+            QMessageBox.warning(self, "File Not Found", f"File not found: {filepath}")
+            self.recent_files.remove(filepath)
+            self.settings.set("editor", "recent_files", self.recent_files)
+            self.update_recent_files_menu()
+    
+    def on_editor_modified_changed(self, editor_widget, modified):
+        """Handle editor modified state change to update tab title."""
+        index = self.tab_widget.indexOf(editor_widget)
+        if index >= 0:
+            current_title = self.tab_widget.tabText(index)
+            # Remove existing * if present
+            if current_title.startswith("*"):
+                current_title = current_title[1:]
+            # Add * if modified
+            if modified:
+                self.tab_widget.setTabText(index, f"*{current_title}")
+            else:
+                self.tab_widget.setTabText(index, current_title)

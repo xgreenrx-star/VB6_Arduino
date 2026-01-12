@@ -1,11 +1,14 @@
 """Serial monitor widget for communicating with microcontroller."""
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QHBoxLayout, QTextEdit, 
-    QLineEdit, QPushButton, QComboBox, QLabel
+    QWidget, QVBoxLayout, QHBoxLayout, QTextEdit,
+    QLineEdit, QPushButton, QComboBox, QLabel, QCheckBox, QFileDialog
 )
+from .serial_plotter import SerialPlotter
 from PyQt6.QtCore import QThread, pyqtSignal, Qt
 from PyQt6.QtGui import QFont
+from datetime import datetime
+import pathlib
 import serial
 import serial.tools.list_ports
 
@@ -13,7 +16,7 @@ import serial.tools.list_ports
 class SerialReader(QThread):
     """Thread for reading from serial port."""
     
-    data_received = pyqtSignal(str)
+    data_received = pyqtSignal(bytes)
     error_occurred = pyqtSignal(str)
     
     def __init__(self, serial_port):
@@ -29,9 +32,9 @@ class SerialReader(QThread):
                 try:
                     if self.serial_port and self.serial_port.is_open:
                         if self.serial_port.in_waiting > 0:
-                            data = self.serial_port.read(self.serial_port.in_waiting).decode('utf-8', errors='ignore')
-                            if data:
-                                self.data_received.emit(data)
+                            raw = self.serial_port.read(self.serial_port.in_waiting)
+                            if raw:
+                                self.data_received.emit(raw)
                 except Exception as e:
                     if self.running:
                         self.error_occurred.emit(f"Read error: {str(e)}")
@@ -53,7 +56,11 @@ class SerialMonitor(QWidget):
         super().__init__()
         self.serial_port = None
         self.reader_thread = None
+        self.plotter = SerialPlotter(self)
         self.init_ui()
+
+    def show_plotter(self):
+        self.plotter.show()
         
     def init_ui(self):
         """Initialize UI."""
@@ -72,10 +79,12 @@ class SerialMonitor(QWidget):
             "230400", "250000", "500000", "1000000", "2000000"
         ])
         self.baud_combo.setCurrentText("115200")
-        self.baud_combo.setMaximumWidth(100)
+        # Match width to other combos and provide tooltip
+        self.baud_combo.setMaximumWidth(140)
+        self.baud_combo.setToolTip("Select serial baud rate for connection")
         toolbar.addWidget(self.baud_combo)
         
-        toolbar.addSpacing(20)
+        toolbar.addSpacing(12)
         
         # Connect/Disconnect button
         self.connect_btn = QPushButton("Connect")
@@ -88,6 +97,48 @@ class SerialMonitor(QWidget):
         self.clear_btn.setMaximumWidth(80)
         self.clear_btn.clicked.connect(self.clear_output)
         toolbar.addWidget(self.clear_btn)
+
+        # Autoscroll toggle
+        self.autoscroll_checkbox = QCheckBox("Autoscroll")
+        self.autoscroll_checkbox.setChecked(True)
+        toolbar.addWidget(self.autoscroll_checkbox)
+
+        # Timestamp toggle
+        self.timestamp_checkbox = QCheckBox("Timestamp")
+        self.timestamp_checkbox.setChecked(True)
+        toolbar.addWidget(self.timestamp_checkbox)
+
+        # Hex view toggle
+        self.hex_checkbox = QCheckBox("Hex")
+        self.hex_checkbox.setToolTip("Show incoming data in hex format")
+        toolbar.addWidget(self.hex_checkbox)
+
+        # Save log button
+        self.save_btn = QPushButton("Save Log")
+        self.save_btn.setMaximumWidth(90)
+        self.save_btn.clicked.connect(self.save_log)
+        toolbar.addWidget(self.save_btn)
+
+        # Overflow / More menu for small widths
+        from PyQt6.QtWidgets import QToolButton, QMenu
+        self.more_btn = QToolButton()
+        self.more_btn.setText("⋯")
+        self.more_btn.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.more_menu = QMenu()
+        # Actions mirror existing controls
+        self.action_clear = self.more_menu.addAction("Clear")
+        self.action_clear.triggered.connect(self.clear_output)
+        self.action_save = self.more_menu.addAction("Save Log")
+        self.action_save.triggered.connect(self.save_log)
+        self.action_toggle_autoscroll = self.more_menu.addAction("Toggle Autoscroll")
+        self.action_toggle_autoscroll.triggered.connect(lambda: self.autoscroll_checkbox.setChecked(not self.autoscroll_checkbox.isChecked()))
+        self.action_toggle_timestamp = self.more_menu.addAction("Toggle Timestamp")
+        self.action_toggle_timestamp.triggered.connect(lambda: self.timestamp_checkbox.setChecked(not self.timestamp_checkbox.isChecked()))
+        self.action_toggle_hex = self.more_menu.addAction("Toggle Hex View")
+        self.action_toggle_hex.triggered.connect(lambda: self.hex_checkbox.setChecked(not self.hex_checkbox.isChecked()))
+        self.more_btn.setMenu(self.more_menu)
+        self.more_btn.setVisible(False)
+        toolbar.addWidget(self.more_btn)
         
         toolbar.addStretch()
         
@@ -115,6 +166,31 @@ class SerialMonitor(QWidget):
         
         self.setLayout(layout)
         self.setEnabled(False)  # Disabled until port is available
+        # Responsive behaviour: update visibility on resize
+        self._responsive_threshold = 480  # px
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_responsive_layout()
+
+    def _update_responsive_layout(self):
+        """Show or hide less-important controls when widget is narrow."""
+        w = self.width()
+        # If narrow, hide Clear, Save, Autoscroll, Timestamp, Hex and show More menu
+        if w < self._responsive_threshold:
+            self.clear_btn.setVisible(False)
+            self.save_btn.setVisible(False)
+            self.autoscroll_checkbox.setVisible(False)
+            self.timestamp_checkbox.setVisible(False)
+            self.hex_checkbox.setVisible(False)
+            self.more_btn.setVisible(True)
+        else:
+            self.clear_btn.setVisible(True)
+            self.save_btn.setVisible(True)
+            self.autoscroll_checkbox.setVisible(True)
+            self.timestamp_checkbox.setVisible(True)
+            self.hex_checkbox.setVisible(True)
+            self.more_btn.setVisible(False)
         
     def set_port(self, port):
         """Set the serial port to use."""
@@ -212,17 +288,59 @@ class SerialMonitor(QWidget):
         if text:
             try:
                 self.serial_port.write((text + "\n").encode('utf-8'))
-                self.output_text.append(f"> {text}\n")
+                self.append_output(f"> {text}\n")
                 self.input_line.clear()
             except Exception as e:
                 self.output_text.append(f"Error sending: {str(e)}\n")
                 
-    def append_output(self, text):
-        """Append text to output."""
+    def append_output(self, data):
+        """Append incoming data to output with formatting options."""
         try:
-            self.output_text.moveCursor(self.output_text.textCursor().End)
-            self.output_text.insertPlainText(text)
-            self.output_text.moveCursor(self.output_text.textCursor().End)
+            # Normalize to bytes for consistent handling
+            raw = data if isinstance(data, (bytes, bytearray)) else str(data).encode("utf-8", errors="ignore")
+
+            if self.hex_checkbox.isChecked():
+                rendered = " ".join(f"{b:02X}" for b in raw)
+            else:
+                rendered = raw.decode("utf-8", errors="replace")
+
+            if self.timestamp_checkbox.isChecked():
+                ts = datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                rendered = f"[{ts}] {rendered}"
+
+            # Track scroll position to support autoscroll toggle
+            scrollbar = self.output_text.verticalScrollBar()
+            prev_value = scrollbar.value()
+            at_bottom = prev_value == scrollbar.maximum()
+
+            cursor = self.output_text.textCursor()
+            cursor.movePosition(cursor.End)
+            self.output_text.setTextCursor(cursor)
+            self.output_text.insertPlainText(rendered)
+
+            # Append newline for readability when hex mode adds long lines
+            if not rendered.endswith("\n"):
+                self.output_text.insertPlainText("\n")
+
+            # Try to parse and plot numeric data (simple CSV or whitespace separated)
+            try:
+                line = raw.decode("utf-8", errors="ignore").strip()
+                if line:
+                    # Accept comma or whitespace separated numbers
+                    if "," in line:
+                        parts = line.split(",")
+                    else:
+                        parts = line.split()
+                    nums = [float(p) for p in parts if p.replace(".", "", 1).replace("-", "", 1).isdigit()]
+                    for i, val in enumerate(nums):
+                        self.plotter.add_sample(f"Y{i+1}", val)
+            except Exception:
+                pass
+            # Restore/scroll based on autoscroll checkbox
+            if self.autoscroll_checkbox.isChecked() or at_bottom:
+                scrollbar.setValue(scrollbar.maximum())
+            else:
+                scrollbar.setValue(prev_value)
         except Exception:
             pass  # Ignore errors in GUI updates
     
@@ -235,6 +353,17 @@ class SerialMonitor(QWidget):
     def clear_output(self):
         """Clear output text."""
         self.output_text.clear()
+
+    def save_log(self):
+        """Save the current log to a file."""
+        filename, _ = QFileDialog.getSaveFileName(self, "Save Serial Log", "serial_log.txt", "Text Files (*.txt);;All Files (*)")
+        if not filename:
+            return
+        try:
+            pathlib.Path(filename).write_text(self.output_text.toPlainText(), encoding="utf-8")
+            self.append_output(f"[log saved to {filename}]\n")
+        except Exception as e:
+            self.append_output(f"[failed to save log: {e}]\n")
         
     def closeEvent(self, event):
         """Handle close event."""
