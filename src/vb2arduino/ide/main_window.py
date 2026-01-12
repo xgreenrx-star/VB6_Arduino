@@ -35,8 +35,14 @@ class ClickableLabel(QLabel):
         try:
             from PyQt6.QtCore import QTimer, QPropertyAnimation, QEasingCurve
             from PyQt6.QtWidgets import QGraphicsOpacityEffect
-            # Save existing effect
+            # Save existing effect and style
             prev_effect = self.graphicsEffect()
+            prev_style = self.styleSheet() or ""
+            # Apply a temporary background style immediately so tests and headless mode observe the flash
+            try:
+                self.setStyleSheet(f"background-color: {color}; padding: 2px;")
+            except Exception:
+                pass
             # Apply opacity effect
             effect = QGraphicsOpacityEffect(self)
             self.setGraphicsEffect(effect)
@@ -51,7 +57,7 @@ class ClickableLabel(QLabel):
             anim.setKeyValueAt(1.0, 1.0)
             # Start animation
             anim.start()
-            # Restore previous effect after animation completes
+            # Restore previous effect and style after animation completes
             def _restore():
                 try:
                     # stop and delete animation
@@ -60,8 +66,15 @@ class ClickableLabel(QLabel):
                     except Exception:
                         pass
                     self.setGraphicsEffect(prev_effect)
+                    try:
+                        self.setStyleSheet(prev_style)
+                    except Exception:
+                        self.setStyleSheet("")
                 except Exception:
-                    self.setGraphicsEffect(None)
+                    try:
+                        self.setGraphicsEffect(None)
+                    except Exception:
+                        pass
             # Schedule restore after duration + small buffer
             QTimer.singleShot(max(40, int(duration_ms)) + 20, _restore)
         except Exception:
