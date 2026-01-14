@@ -16,6 +16,9 @@ htmlcov/
 
 # Ignore generated output
 generated/
+# Allow committed generated samples under visualasic/examples (we generate and track these intentionally)
+!visualasic/examples/generated_tft_sample/
+!visualasic/examples/generated_tft_sample/**
 # Ignore generated example/build outputs and platformio artifacts
 generated_*/
 generated* 
