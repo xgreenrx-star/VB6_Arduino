@@ -17,6 +17,7 @@ A VB6-like language transpiler and IDE that converts Visual Basic syntax to Ardu
 - **Auto-Detection**: Board and port auto-detection on startup; visual indicators
 - **Error Mapping**: Compilation errors map back to VB lines with clickable navigation
 - **Error Copy**: Right-click errors to copy single or all to clipboard
+- **Visual Designer**: Dockable WYSIWYG form designer with a modeless runtime preview and live-sync, rulers, and snaplines for pixel-accurate layout. See docs/USER_GUIDE.md → Visual Designer for screenshots and usage tips.
 
 ## Supported VB Subset
 

@@ -49,6 +49,7 @@ If `pio` is not on PATH, run as `python -m platformio ...`.
   - Auto chips: small "Auto" tags appear next to Board/Port when detection succeeds (they hide when you change selection).
   - ESP32-S3 convenience: PlatformIO is generated with USB CDC flags and 115200 monitor speed; upload speed defaults to 921600 for S3 boards.
  - **Libraries Manager**: Curated catalog with board-aware recommendations, category tabs, and custom adds; selections persist and emit `lib_deps` in `platformio.ini` so PlatformIO automatically downloads required libraries.
+- **Visual Designer (WYSIWYG)**: A dockable form designer for placing controls visually, editing properties in the Inspector, previewing forms (modeless preview, live-sync), rulers and snaplines for alignment, and saving/loading forms as JSON templates. See the Visual Designer section in the User Guide for details.
  - **Pins Configuration**: Board templates auto-load on selection; edit pins by category (Basic/TFT/I2C/SPI). Save your current pins+flags as named templates and reload/delete later.
  - **Build Flags**: A dedicated tab to add/remove compiler defines (e.g., `-D...`), merged with board-required flags in `platformio.ini`.
  - **Error Copy**: Right-click errors in the error list to copy a single error or all errors to the clipboard.
@@ -63,8 +64,36 @@ If `pio` is not on PATH, run as `python -m platformio ...`.
     - **Build Flags**: Add/remove custom compiler defines for the selected board.
     - **Clean Build**: Remove build artifacts from the generated folder (PlatformIO clean).
     - **Device Monitor**: Open PlatformIO device monitor in a new terminal for real-time serial debugging.
+    - **Preview Form** (Ctrl+Alt+R): Open a modeless preview window showing the runtime appearance of the current form; can be live-synced with editor changes.
+    - **Live Sync Preview**: Toggle automatic updates to the modeless preview while you edit (useful for iterative design).
     - **Settings**: Customize editor colors, behavior, and notification preferences.
   - Help: Programmer's Reference, About.
+
+## Visual Designer
+
+The Visual Designer is a dockable WYSIWYG designer for placing and arranging controls on a form. Key features:
+
+- Drag & drop controls: Buttons, Labels, TextBoxes, PictureBoxes, CheckBoxes, OptionButtons, ComboBoxes, ListBoxes, Sliders.
+- Form chrome: a Form frame with caption and background color to make forms stand out.
+- Inspector: edit properties (Caption/Text, X/Y, W/H, Color, control-specific settings). When nothing is selected, the inspector edits the Form properties (Caption, background color, size).
+- Modeless preview: Tools → Preview Form opens a modeless preview window; Tools → Live Sync Preview keeps it updated automatically as you edit.
+- Rulers & Snaplines: View → Rulers shows rulers; alignment snaplines appear during drag to assist layout.
+- Save/Open forms: form templates are JSON files under `visualasic/examples/form_templates/` (e.g., `classic.form.json`).
+
+Screenshots:
+
+![Designer form](/docs/images/visual_designer_form.png)
+
+![Preview dialog](/docs/images/visual_designer_preview.png)
+
+![Rulers & Snaplines](/docs/images/visual_designer_snaplines.png)
+
+Usage notes:
+
+1. Open Visual Designer from File → Visual Designer (or Tools/View) and select the dock.
+2. Use the left toolbox to place controls. After placing a control the tool reverts to Select mode.
+3. Select the form (click empty canvas) to edit form-level properties in the Inspector.
+4. Use Tools → Preview Form and Tools → Live Sync Preview to check runtime appearance as you edit.
 - **Project Tree**: Procedures list for quick navigation.
 - **Serial Monitor**: Connect/disconnect, baud selection, send/receive.
 - **Library Include Helper**: Inserts `#Include <...>` lines at top of the sketch.

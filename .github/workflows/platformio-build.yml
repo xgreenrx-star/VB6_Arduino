@@ -1,0 +1,55 @@
+name: PlatformIO Build (TFT_eSPI sample)
+
+on:
+  push:
+    paths:
+      - 'visualasic/**'
+  pull_request:
+    paths:
+      - 'visualasic/**'
+
+jobs:
+  build-sample:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Cache pip packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/pyproject.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
+
+      - name: Install PlatformIO
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          python -m pip install platformio
+
+      - name: Cache PlatformIO packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.platformio
+          key: ${{ runner.os }}-platformio-${{ hashFiles('visualasic/examples/generated_tft_sample/platformio.ini') }}
+          restore-keys: |
+            ${{ runner.os }}-platformio-
+
+      - name: Build TFT_eSPI sample (esp32dev)
+        working-directory: visualasic/examples/generated_tft_sample
+        run: |
+          set -e
+          platformio run -e esp32dev
+
+      - name: Upload build artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tft_eSPI_sample_firmware
+          path: visualasic/examples/generated_tft_sample/.pio/build/esp32dev/firmware.bin
